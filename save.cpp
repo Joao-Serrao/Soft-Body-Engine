@@ -1,3 +1,4 @@
+/*
 #ifdef __APPLE__
 #include <GLUT/glut.h>
 #else
@@ -714,7 +715,7 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
                 indexs.push_back(vertexMap[vertex]);
             }
         }
-    }*/
+    }
 
     // First Face
     z = -L;
@@ -1084,7 +1085,7 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
         s.restLength = glm::length(vertices[A].pos - center.pos);
         springsC.push_back(s);
         ++addedToCenter;
-    }*/
+    }
 
 
     // Build final model
@@ -1298,7 +1299,7 @@ void handleCollisionPM(Node& node, const Model& model) {
                 glm::vec3 tangentVel = node.vel - vn * n;
                 node.vel -= friction * tangentVel;
                 node.vel -= (1.0f + model.bounciness) * vn * n;
-            } */
+            }
         }
         return;
     }
@@ -2052,3 +2053,4 @@ int main(int argc, char **argv) {
 // href="https://www.jetbrains.com/help/clion/">jetbrains.com/help/clion/</a>.
 //  Also, you can try interactive lessons for CLion by selecting
 //  'Help | Learn IDE Features' from the main menu.
+*/

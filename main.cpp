@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <string>
 #include <cstdio>
+#include <memory>
 #include <set>
 #include <glm/glm.hpp>
 #include <glm/gtx/hash.hpp>
@@ -105,12 +106,30 @@ struct AngledSpring {
     float lambda = 0.0f;  // Lambda saved between SubSteps
 };
 
-// Struct used to representa Tetrahedrons
+// Struct used to represent a Tetrahedrons
 struct Tetra {
     int in;  // Index of the point inside the sphere
     vector<unsigned int> out;  // Indexs of the Outer Points
     float volume;  // Volume between Nodes to try to achieve
     float lambda = 0.0f;  // Lambda saved between SubSteps
+};
+
+// Struct used to represent a BB
+struct BB {
+    float minX = std::numeric_limits<float>::infinity(), maxX = -std::numeric_limits<float>::infinity();
+    float minY = std::numeric_limits<float>::infinity(), maxY = -std::numeric_limits<float>::infinity();
+    float minZ = std::numeric_limits<float>::infinity(), maxZ = -std::numeric_limits<float>::infinity();
+};
+
+// Struct used to represent a BVH
+struct BVH {
+    BB bb;
+    int self;
+    int left = -1;
+    int right = -1;
+    int p1;
+    int p2;
+    int p3;
 };
 
 // Struct used for VBOs
@@ -140,6 +159,8 @@ struct Model {
     bool wireframe = false;  // Render in Wireframe Mode
     bool update = false;  // Update Positions
     bool tetra = false;  // Uses Tetrahedrons
+    BB bb;  // Defines the Bounding Box
+    vector<BVH> bvhs;
 };
 
 struct Vec3Hash {
@@ -263,6 +284,104 @@ glm::vec2 getEdge(vector<glm::vec2> edgesA, vector<glm::vec2> edgesB) {
     }
     return glm::vec2(0);
 }
+
+void createBB(Model &model) {
+    BB bb;
+    for (Node &node : model.nodes) {
+        bb.minX = std::min(node.pos.x, bb.minX);
+        bb.minY = std::min(node.pos.y, bb.minY);
+        bb.minZ = std::min(node.pos.z, bb.minZ);
+        bb.maxX = std::max(node.pos.x, bb.maxX);
+        bb.maxY = std::max(node.pos.y, bb.maxY);
+        bb.maxZ = std::max(node.pos.z, bb.maxZ);
+    }
+    model.bb = bb;
+}
+
+BB createBBPoints(glm::vec3 p1, glm::vec3 p2, glm::vec3 p3) {
+    BB bb;
+    bb.minX = std::min(std::min(std::min(p1.x, bb.minX), p2.x), p3.x);
+    bb.minY = std::min(std::min(std::min(p1.y, bb.minY), p2.y), p3.y);
+    bb.minZ = std::min(std::min(std::min(p1.z, bb.minZ), p2.z), p3.z);
+    bb.maxX = std::max(std::max(std::max(p1.x, bb.maxX),p2.x),p3.x);
+    bb.maxY = std::max(std::max(std::max(p1.y, bb.maxY),p2.y),p3.y);
+    bb.maxZ = std::max(std::max(std::max(p1.z, bb.maxZ),p2.z),p3.z);
+    return bb;
+}
+
+BB addBB(BB &bb1, BB &bb2) {
+    BB bb;
+    bb.minX = std::min(bb1.minX, bb2.minX);
+    bb.minY = std::min(bb1.minY, bb2.minY);
+    bb.minZ = std::min(bb1.minZ, bb2.minZ);
+    bb.maxX = std::max(bb1.maxX, bb2.maxX);
+    bb.maxY = std::max(bb1.maxY, bb2.maxY);
+    bb.maxZ = std::max(bb1.maxZ, bb2.maxZ);
+    return bb;
+}
+
+bool insideBB(BB &bb, glm::vec3 p) {
+    bool x = p.x > bb.minX && p.x < bb.maxX;
+    bool y = p.y > bb.minY && p.y < bb.maxY;
+    bool z = p.z > bb.minZ && p.z < bb.maxZ;
+
+    if (x && y && z) {
+        return true;
+    }
+    return false;
+}
+
+void createModelVBH(Model &model) {
+    vector<BVH> bvhsTemp;
+    vector<BVH> bvhs;
+
+    int k = 0;
+
+    for (int i = 0; i < model.faces.size(); i += 3) {
+        BVH bvh;
+        bvh.bb = createBBPoints(model.nodes[model.faces[i]].pos, model.nodes[model.faces[i + 1]].pos, model.nodes[model.faces[i + 2]].pos);
+        bvh.p1 = model.faces[i];
+        bvh.p2 = model.faces[i + 1];
+        bvh.p3 = model.faces[i + 2];
+        bvh.self = k;
+        bvhs.push_back(bvh);
+        bvhsTemp.push_back(bvh);
+        k++;
+    }
+
+    while (bvhsTemp.size() > 1) {
+        BVH first = bvhsTemp.front();
+        bvhsTemp.erase(bvhsTemp.begin());
+
+        BVH second = bvhsTemp.front();
+        bvhsTemp.erase(bvhsTemp.begin());
+
+        BVH parent;
+        parent.bb = addBB(first.bb, second.bb);
+        parent.left = first.self;
+        parent.right = second.self;
+        parent.self = k;
+        bvhs.push_back(parent);
+        bvhsTemp.push_back(parent);
+        k++;
+    }
+
+    model.bvhs = bvhs;
+}
+
+void updateBVHLeafs (Model &model) {
+    for (int i = 0; i < model.faces.size()/3; i++) {
+        model.bvhs[i].bb = createBBPoints(model.nodes[model.bvhs[i].p1].pos, model.nodes[model.bvhs[i].p2].pos, model.nodes[model.bvhs[i].p3].pos);
+    }
+}
+
+void updateBVH (Model &model) {
+    updateBVHLeafs(model);
+    for (int i = model.faces.size()/3; i < model.bvhs.size(); i++) {
+        model.bvhs[i].bb = addBB(model.bvhs[model.bvhs[i].left].bb, model.bvhs[model.bvhs[i].right].bb);
+    }
+}
+
 
 // Makes a Soft Object with the shape of a Sphere
 Model makeSoftSphere(float radius, int slices, int stacks, float subStep = 1.0f, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
@@ -570,6 +689,8 @@ Model makeSoftSphere(float radius, int slices, int stacks, float subStep = 1.0f,
     model.volume = calculateVolume(model);
     model.compliance = volumeCompliance;
     model.tetra = tetra;
+    createBB(model);
+    createModelVBH(model);
 
     uploadModelToGPU(model);
     printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
@@ -632,6 +753,7 @@ Model makeRigidSphere(float radius, int slices, int stacks, float mass = 1.0f, f
     model.color = color;
     model.wireframe = wireframe;
     model.update = update;
+    createBB(model);
     uploadModelToGPU(model);
     return model;
 }
@@ -1102,7 +1224,8 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
     model.wireframe = wireframe;
     model.update = update;
     model.subStep = subStep;
-
+    createBB(model);
+    createModelVBH(model);
     uploadModelToGPU(model);
     printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
     return model;
@@ -1167,6 +1290,7 @@ Model makeRigidBox(int slices, int stacks, bool volumeBased = false, float mass 
     model.color = color;
     model.wireframe = wireframe;
     model.update = update;
+    createBB(model);
 
     uploadModelToGPU(model);
     return model;
@@ -1222,145 +1346,275 @@ void updateGPUpositions(Model &model)
     glBindBuffer(GL_ARRAY_BUFFER,0);
 }
 
+bool isPointInTriangle(const glm::vec3& pt, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
+    glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
 
-// Improved ray-triangle intersection using Möller-Trumbore algorithm
-bool rayIntersectsTriangle(
-    const glm::vec3& orig, const glm::vec3& dir,
-    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2,
-    float* outT = nullptr)
-{
-    glm::vec3 edge1 = v1 - v0;
-    glm::vec3 edge2 = v2 - v0;
+    // Barycentric technique using cross products
+    glm::vec3 edge0 = b - a;
+    glm::vec3 vp0 = pt - a;
+    glm::vec3 c0 = glm::cross(edge0, vp0);
+    if (glm::dot(n, c0) < 0) return false;
 
-    glm::vec3 h = glm::cross(dir, edge2);
-    float a = glm::dot(edge1, h);
-    if (fabs(a) < EPSILON)
-        return false;  // Ray is parallel to triangle
+    glm::vec3 edge1 = c - b;
+    glm::vec3 vp1 = pt - b;
+    glm::vec3 c1 = glm::cross(edge1, vp1);
+    if (glm::dot(n, c1) < 0) return false;
 
-    float f = 1.0f / a;
-    glm::vec3 s = orig - v0;
-    float u = f * glm::dot(s, h);
-    if (u < 0.0f || u > 1.0f)
-        return false;
+    glm::vec3 edge2 = a - c;
+    glm::vec3 vp2 = pt - c;
+    glm::vec3 c2 = glm::cross(edge2, vp2);
+    if (glm::dot(n, c2) < 0) return false;
 
-    glm::vec3 q = glm::cross(s, edge1);
-    float v = f * glm::dot(dir, q);
-    if (v < 0.0f || u + v > 1.0f)
-        return false;
+    return true;
+}
 
-    // At this stage, ray intersects triangle
-    float t = f * glm::dot(edge2, q);
-    if (t > EPSILON) {
-        if (outT) *outT = t; // Optional: output distance to intersection
-        return true;
+struct CollisionResult {
+    bool collided = false;
+    glm::vec3 normal = glm::vec3(0);
+    glm::vec3 contact_point = glm::vec3(0);
+};
+
+CollisionResult collisionBVH(BVH bvh, Model &model, glm::vec3 pos) {
+    CollisionResult collision;
+    if (bvh.left == -1 && bvh.right == -1) {
+        glm::vec3 v1 = model.nodes[bvh.p2].pos - model.nodes[bvh.p1].pos;
+        glm::vec3 v2 = model.nodes[bvh.p3].pos - model.nodes[bvh.p1].pos;
+        glm::vec3 v3 = pos - model.nodes[bvh.p1].pos;
+
+        glm::vec3 normal = glm::normalize(glm::cross(v1, v2));
+
+        float d = glm::dot(v3, normal);
+        if (d < 0) {
+            glm::vec3 future_pos = pos - d * normal;
+            if (isPointInTriangle(future_pos, model.nodes[bvh.p1].pos, model.nodes[bvh.p2].pos, model.nodes[bvh.p3].pos)) {
+                collision.collided = true;
+                collision.normal = normal;
+                collision.contact_point = future_pos;
+            }
+        }
+        else {
+            collision.collided = false;
+        }
+
+        return collision;
+    }
+    if (pos.x > bvh.bb.minX && pos.x < bvh.bb.maxX && pos.y > bvh.bb.minY && pos.y < bvh.bb.maxY && pos.z > bvh.bb.minZ && pos.z < bvh.bb.maxZ) {
+        CollisionResult leftResult, rightResult;
+        if (bvh.left) leftResult = collisionBVH(model.bvhs[bvh.left], model, pos);
+        if (bvh.right) rightResult = collisionBVH(model.bvhs[bvh.right], model, pos);
+
+        if (leftResult.collided && (!rightResult.collided || glm::length(pos - leftResult.contact_point) < glm::length(pos - rightResult.contact_point))) {
+            return leftResult;
+        }
+        if (rightResult.collided) return rightResult;
+    }
+    collision.collided = false;
+    return collision;
+}
+
+vector<BVH> getBVH (BVH bvh, Model& model) {
+    vector<BVH> closeBVHs;
+    vector<BVH> result;
+
+    if (bvh.left == -1 && bvh.right == -1) {
+        closeBVHs.push_back(bvh);
+        return closeBVHs;
     }
 
-    return false;
+    if (bvh.left != -1) {
+        BVH &left = model.bvhs[bvh.left];
+        result = getBVH(left, model);
+        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+    }
+
+    if (bvh.right != -1) {
+        BVH &right = model.bvhs[bvh.right];
+        result = getBVH(right, model);
+        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+    }
+
+    return closeBVHs;
+}
+
+
+vector<BVH> getCloseBVH (BVH bvh, Model& model, glm::vec3 pos) {
+    //printf("here");
+    vector<BVH> closeBVHs;
+    vector<BVH> result;
+
+    BVH &left = model.bvhs[bvh.left];
+    BVH &right = model.bvhs[bvh.right];
+
+    bool insideLeft = insideBB(left.bb, pos);
+    bool insideRight = insideBB(right.bb, pos);
+
+    if (insideLeft && insideRight) {
+        result = getCloseBVH(left, model, pos);
+        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+
+        result = getCloseBVH(right, model, pos);
+        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+
+        return closeBVHs;
+    }
+
+    // Only left child exists
+    if (insideLeft) {
+        BVH &left = model.bvhs[bvh.left];
+        if (insideBB(left.bb, pos)) {
+            result = getCloseBVH(left, model, pos);
+            closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+        }
+        return closeBVHs;
+    }
+
+    // Only right child exists
+    if (insideRight) {
+        BVH &right = model.bvhs[bvh.right];
+        if (insideBB(right.bb, pos)) {
+            result = getCloseBVH(right, model, pos);
+            closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+        }
+        return closeBVHs;
+    }
+
+    result = getBVH(bvh, model);
+    closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+    return closeBVHs;
 }
 
 
 //------------------------------------------------------------------------------
 //  HARD-body particle–model collision (minimal rewrite, same names / style)
 //------------------------------------------------------------------------------
-void handleCollisionPM(Node& node, const Model& model) {
+void handleCollisionPM(Node& node, Model& model, Model& m) {
     // Use predicted position during constraint solve
     glm::vec3& pos = node.predicted_pos;
     glm::vec3& previous_pos = node.pos;
 
-    if (model.type == 1) {
-        // -------- A. Axis-Aligned Box --------------
-        glm::vec3 c = model.center.pos;
-        float H = model.distH, V = model.distV, L = model.distL;
+    if (pos.x > model.bb.minX && pos.x < model.bb.maxX && pos.y > model.bb.minY && pos.y < model.bb.maxY && pos.z > model.bb.minZ && pos.z < model.bb.maxZ) {
+        if (model.type == 1) {
+            // -------- A. Axis-Aligned Box --------------
+            glm::vec3 c = model.center.pos;
+            float H = model.distH, V = model.distV, L = model.distL;
 
-        if (pos.x > c.x - H && pos.x < c.x + H &&
-            pos.y > c.y - V && pos.y < c.y + V &&
-            pos.z > c.z - L && pos.z < c.z + L) {
+            if (pos.x > c.x - H && pos.x < c.x + H &&
+                pos.y > c.y - V && pos.y < c.y + V &&
+                pos.z > c.z - L && pos.z < c.z + L) {
 
 
-            float dx = std::min(c.x + H - previous_pos.x, previous_pos.x - (c.x - H));
-            float dy = std::min(c.y + V - previous_pos.y, previous_pos.y - (c.y - V));
-            float dz = std::min(c.z + L - previous_pos.z, previous_pos.z - (c.z - L));
+                float dx = std::min(c.x + H - previous_pos.x, previous_pos.x - (c.x - H));
+                float dy = std::min(c.y + V - previous_pos.y, previous_pos.y - (c.y - V));
+                float dz = std::min(c.z + L - previous_pos.z, previous_pos.z - (c.z - L));
 
-            glm::vec3 n(0.0f);
-            float pen = dx;
-            n = glm::vec3((pos.x > c.x ? c.x + H : c.x - H), pos.y, pos.z);
-            glm::vec3 normal = glm::vec3((pos.x > c.x ? 1.0f : -1.0f), 0.0f, 0.0f);
-            if (dy < pen) { pen = dy; n = glm::vec3(pos.x, (pos.y > c.y ? c.y + V : c.y - V), pos.z); normal = glm::vec3(0.0f, (pos.y > c.y ? 1.0f : -1.0f), 0.0f);}
-            if (dz < pen) { pen = dz; n = glm::vec3(pos.x, pos.y, (pos.z > c.z ? c.z + L : c.z - L)); normal = glm::vec3(0.0f, 0.0f, (pos.z > c.z ? 1.0f : -1.0f));}
+                glm::vec3 n(0.0f);
+                float pen = dx;
+                n = glm::vec3((pos.x > c.x ? c.x + H : c.x - H), pos.y, pos.z);
+                glm::vec3 normal = glm::vec3((pos.x > c.x ? 1.0f : -1.0f), 0.0f, 0.0f);
+                if (dy < pen) { pen = dy; n = glm::vec3(pos.x, (pos.y > c.y ? c.y + V : c.y - V), pos.z); normal = glm::vec3(0.0f, (pos.y > c.y ? 1.0f : -1.0f), 0.0f);}
+                if (dz < pen) { pen = dz; n = glm::vec3(pos.x, pos.y, (pos.z > c.z ? c.z + L : c.z - L)); normal = glm::vec3(0.0f, 0.0f, (pos.z > c.z ? 1.0f : -1.0f));}
 
-            node.predicted_pos = n;
-            node.hasCollided = true;
-            node.normal = normal;
+                node.predicted_pos = n;
+                node.hasCollided = true;
+                node.normal = normal;
 
-            /*
-            float vn = glm::dot(node.vel, n);
-            if (vn < 0.0f) {
-                glm::vec3 tangentVel = node.vel - vn * n;
-                node.vel -= friction * tangentVel;
-                node.vel -= (1.0f + model.bounciness) * vn * n;
-            } */
+                /*
+                float vn = glm::dot(node.vel, n);
+                if (vn < 0.0f) {
+                    glm::vec3 tangentVel = node.vel - vn * n;
+                    node.vel -= friction * tangentVel;
+                    node.vel -= (1.0f + model.bounciness) * vn * n;
+                } */
+                }
+            return;
         }
-        return;
-    }
 
-    if (model.type == 2) {
-        // -------- B. Sphere --------------
-        glm::vec3 delta = pos - model.center.pos;
-        float r = model.distH;
-        float d = glm::length(delta);
+        if (model.type == 2) {
+            // -------- B. Sphere --------------
+            glm::vec3 delta = pos - model.center.pos;
+            float r = model.distH;
+            float d = glm::length(delta);
 
-        if (d < r) {
-            glm::vec3 n = (d > 1e-6f) ? delta / d : glm::vec3(0.0f, 1.0f, 0.0f);
-            float pen = r - d;
+            if (d <= r) {
+                glm::vec3 normal = glm::normalize(delta);
 
-            pos += n * pen;
-
-            float vn = glm::dot(node.vel, n);
-            if (vn < 0.0f) {
-                glm::vec3 tangentVel = node.vel - vn * n;
-                node.vel -= friction * tangentVel;
-                node.vel -= (1.0f + model.bounciness) * vn * n;
+                node.predicted_pos = model.center.pos + normal * r;
+                node.hasCollided = true;
+                node.normal = normal;
             }
+            return;
         }
-        return;
-    }
 
-    if (model.type == 0) {
-        // -------- C. Mesh Volume ---------
-        const vector<unsigned int>& faces = model.faces;
+        if (model.type == 0) {
+            vector<BVH> closeBVHs = getCloseBVH(model.bvhs[model.bvhs.size() - 1], model, pos);
+            //printf("BVHS SIZE : %d \n", closeBVHs.size());
+            bool inside = true;
+            float minDist = numeric_limits<float>::infinity();
+            Node& closestP =model.nodes[model.bvhs[model.bvhs.size() - 1].p1];
+            glm::vec3 n;
+            for (BVH& bvh : closeBVHs) {
+                Node& n1 = model.nodes[bvh.p1];
+                Node& n2 = model.nodes[bvh.p2];
+                Node& n3 = model.nodes[bvh.p3];
 
-        int intersections = 0;
-        glm::vec3 rayDir = glm::normalize(glm::vec3(1.0f, 0.5f, 0.3f));
-        float minDist = std::numeric_limits<float>::max();
-        glm::vec3 n;
+                glm::vec3 v1 = n2.pos - n1.pos;
+                glm::vec3 v2 = n3.pos - n1.pos;
+                glm::vec3 v3 = pos - n1.pos;
 
-        for (int i = 0; i < faces.size(); i += 3) {
-            glm::vec3 v0 = model.nodes[faces[i+2]].pos;
-            glm::vec3 v1 = model.nodes[faces[i+1]].pos;
-            glm::vec3 v2 = model.nodes[faces[i]].pos;
-            float dist;
+                glm::vec3 crossProd = glm::cross(v1, v2);
+                float len = glm::length(crossProd);
 
-            if (rayIntersectsTriangle(pos, rayDir, v0, v1, v2, &dist)) {
-                intersections++;
-                if (dist < minDist) {
-                    minDist = dist;
-                    n = -glm::normalize(glm::cross(v1 - v0, v2 - v0));
+                if (len < 1e-6f || glm::any(glm::isnan(crossProd))) {
+                    continue; // skip this triangle
+                }
+
+                glm::vec3 normal = crossProd / len; // safe normalize
+
+                float d = glm::dot(v3, normal);
+                if (d < EPSILON) {
+                    glm::vec3 future_pos = pos - d * normal;
+
+                    float dist = glm::length(future_pos - pos);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        n = normal;
+
+                        float minPdist = glm::length(v3);
+                        closestP = n1;
+                        if (glm::length(pos - n2.pos) < minPdist) {
+                            minPdist = glm::length(pos - n2.pos);
+                            closestP = n2;
+                        }
+                        if (glm::length(pos - n3.pos) < minPdist) {
+                            minPdist = glm::length(pos - n3.pos);
+                            closestP = n3;
+                        }
+                    }
+                } else {
+                    inside = true;
                 }
             }
-        }
 
-        bool isInside = (intersections % 2);
-        if (isInside) {
-            pos += n * minDist;
-
-            float vn = glm::dot(node.vel, n);
-            if (vn < 0.0f) {
-                glm::vec3 tangentVel = node.vel - vn * n;
-                node.vel -= friction * tangentVel;
-                node.vel -= (1.0f + model.bounciness) * vn * n;
+            bool hasNaN = std::isnan(n.x) || std::isnan(n.y) || std::isnan(n.z);
+            if (inside && !hasNaN && minDist != numeric_limits<float>::infinity()) {
+                const float correction_strength = 1.0f; // Tune between 0.1f - 0.5f
+                glm::vec3 correction = correction_strength * minDist/2 * n;
+                closestP.pos -= correction;
+                node.predicted_pos += correction;
+                node.hasCollided = true;
+                node.normal = n;
+                updateBVH(model);
             }
+            /*
+                CollisionResult result = collisionBVH(m.bvhs[model.bvhs.size() - 1], m, pos);
+
+                if (result.collided) {
+                    node.predicted_pos = result.contact_point;
+                    node.hasCollided = true;
+                    node.normal = result.normal;
+                }*/
+
         }
-        return;
     }
 }
 
@@ -1757,19 +2011,9 @@ void updateSoftNodes(float dt, Model& model) {
             Node& n = model.nodes[i];
             for (Model& m : models) {
                 if (&m != &model) {
-                    handleCollisionPM(n, m);
+                    handleCollisionPM(n, m, model);
                 }
             }
-        }
-
-        for (Model& m : models) {
-            if (&m != &model) {
-                handleCollisionPM(model.center, m);
-            }
-        }
-
-        for (size_t i = 0; i < model.nodes.size(); ++i) {
-            Node& n = model.nodes[i];
             n.vel = (n.predicted_pos - n.pos) / dt_sub;
             n.pos = n.predicted_pos;
             n.vel = n.vel * (n.normal * friction + (glm::vec3 (1.0f) - n.normal));
@@ -1783,12 +2027,29 @@ void updateSoftNodes(float dt, Model& model) {
                 n.hasCollided = false;
             }
         }
+
+        for (Model& m : models) {
+            if (&m != &model) {
+                handleCollisionPM(model.center, m, model);
+            }
+        }
     }
     
     model.center.vel = (model.center.predicted_pos - model.center.pos) / dt;
     model.center.pos = model.center.predicted_pos;
 
     updateGPUpositions(model);
+
+    createBB(model);
+
+    if (frame%5 == 0) {
+        updateBVHLeafs(model);
+        return;
+    }
+    else{ if(frame%10 == 0) {
+            updateBVH(model);
+        }
+    }
 }
 
 
@@ -1824,6 +2085,7 @@ void updateRigidNodes(float dt, Model& model) {
 
         updateGPUpositions(model);
     }
+    createBB(model);
 }
 
 void updateNodes(float dt, Model& model) {
@@ -1905,7 +2167,7 @@ void renderScene(void) {
     glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, -100.0f); glVertex3f(0.0f, 0.0f, 100.0f);
     glEnd();
 
-    if (!paused) {
+    if (!paused && dt > 0.00001f) {
         for (Model& m : models) {
             if (m.update) {
                 updateNodes(dt, m);
@@ -1927,6 +2189,7 @@ void renderScene(void) {
         glutSetWindowTitle(s);
     }
 
+    //printf("Sphere top node pos %f %f %f \n", models[0].nodes[0].pos.x, models[0].nodes[0].pos.y, models[0].nodes[0].pos.z);
     glutSwapBuffers();
 }
 
@@ -2025,13 +2288,13 @@ int main(int argc, char **argv) {
     previousTime = glutGet(GLUT_ELAPSED_TIME);
     currentTime = glutGet(GLUT_ELAPSED_TIME);
 
-    //models.push_back(makeRigidSphere(3, 20, 20,1, 50, 1,1, true));
-    models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,8,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
+    //models.push_back(makeRigidSphere(1, 20, 20,1, 50, 0,1, 0, glm::vec3(1.0f,1.0f,0.0f),true));
+    //models.push_back(makeSoftSphere(1, 10, 10, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,5,0,glm::vec3(1.0f,0.0f,0.0f), true, true, false));
     //models.push_back(makeSoftSphere(3, 30, 30,false, 1, 0.5f, 1000, 1000, 5, 0,10,0,50,glm::vec3(0.0f,0.0f,1.0f), true, true));
     //models.push_back(makeSoftSphere(1, 20, 20,1, 100, 2, 0, 10, 0, 20));
     models.push_back(makeRigidBox(20, 20, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
-    models.push_back(makeSoftBox(4, 4, 2.0f, 1, 0.5,0.0f, 0, 0, 0, 0, 5,1,1,1,1,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
-    models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 1, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), true));
+    models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5,0.0f, 0, 0, 0, 0, 1,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, false));
+    //models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), true, false));
     //models.push_back(makeSoftSphere(3, 20, 20,1, 50, 1, 0, 3, 0, 10, true));
 
     glutDisplayFunc(renderScene);
