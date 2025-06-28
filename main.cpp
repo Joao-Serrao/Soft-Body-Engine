@@ -321,9 +321,9 @@ BB addBB(BB &bb1, BB &bb2) {
 }
 
 bool insideBB(BB &bb, glm::vec3 p) {
-    bool x = p.x > bb.minX && p.x < bb.maxX;
-    bool y = p.y > bb.minY && p.y < bb.maxY;
-    bool z = p.z > bb.minZ && p.z < bb.maxZ;
+    bool x = p.x >= bb.minX && p.x <= bb.maxX;
+    bool y = p.y >= bb.minY && p.y <= bb.maxY;
+    bool z = p.z >= bb.minZ && p.z <= bb.maxZ;
 
     if (x && y && z) {
         return true;
@@ -337,9 +337,14 @@ void createModelVBH(Model &model) {
 
     int k = 0;
 
+    // Create leaf BVHs
     for (int i = 0; i < model.faces.size(); i += 3) {
         BVH bvh;
-        bvh.bb = createBBPoints(model.nodes[model.faces[i]].pos, model.nodes[model.faces[i + 1]].pos, model.nodes[model.faces[i + 2]].pos);
+        bvh.bb = createBBPoints(
+            model.nodes[model.faces[i]].pos,
+            model.nodes[model.faces[i + 1]].pos,
+            model.nodes[model.faces[i + 2]].pos
+        );
         bvh.p1 = model.faces[i];
         bvh.p2 = model.faces[i + 1];
         bvh.p3 = model.faces[i + 2];
@@ -349,18 +354,41 @@ void createModelVBH(Model &model) {
         k++;
     }
 
+    // Agglomerative clustering: merge closest pairs
     while (bvhsTemp.size() > 1) {
-        BVH first = bvhsTemp.front();
-        bvhsTemp.erase(bvhsTemp.begin());
+        float minCost = std::numeric_limits<float>::max();
+        int minI = 0, minJ = 1;
 
-        BVH second = bvhsTemp.front();
-        bvhsTemp.erase(bvhsTemp.begin());
+        // Find pair with minimum combined volume
+        for (int i = 0; i < bvhsTemp.size(); ++i) {
+            for (int j = i + 1; j < bvhsTemp.size(); ++j) {
+                BB combined = addBB(bvhsTemp[i].bb, bvhsTemp[j].bb);
+                float cost = (combined.maxX - combined.minX) *
+                             (combined.maxY - combined.minY) *
+                             (combined.maxZ - combined.minZ);
+                if (cost < minCost) {
+                    minCost = cost;
+                    minI = i;
+                    minJ = j;
+                }
+            }
+        }
 
+        BVH first = bvhsTemp[minI];
+        BVH second = bvhsTemp[minJ];
+
+        // Remove in reverse order to avoid index shifts
+        if (minI > minJ) std::swap(minI, minJ);
+        bvhsTemp.erase(bvhsTemp.begin() + minJ);
+        bvhsTemp.erase(bvhsTemp.begin() + minI);
+
+        // Create parent node
         BVH parent;
         parent.bb = addBB(first.bb, second.bb);
         parent.left = first.self;
         parent.right = second.self;
         parent.self = k;
+
         bvhs.push_back(parent);
         bvhsTemp.push_back(parent);
         k++;
@@ -368,6 +396,7 @@ void createModelVBH(Model &model) {
 
     model.bvhs = bvhs;
 }
+
 
 void updateBVHLeafs (Model &model) {
     for (int i = 0; i < model.faces.size()/3; i++) {
@@ -1412,77 +1441,118 @@ CollisionResult collisionBVH(BVH bvh, Model &model, glm::vec3 pos) {
     return collision;
 }
 
-vector<BVH> getBVH (BVH bvh, Model& model) {
-    vector<BVH> closeBVHs;
-    vector<BVH> result;
+bool rayIntersectsTriangle(
+    const glm::vec3& orig, const glm::vec3& dir,
+    const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2,
+    float* outT = nullptr)
+{
+    glm::vec3 edge1 = v1 - v0;
+    glm::vec3 edge2 = v2 - v0;
 
+    glm::vec3 h = glm::cross(dir, edge2);
+    float a = glm::dot(edge1, h);
+    if (a > -EPSILON)
+        return false;  // Backface or parallel — cull
+
+    //if (fabs(a) < EPSILON)
+    //    return false;  // Backface or parallel — cull
+
+
+    float f = 1.0f / a;
+    glm::vec3 s = orig - v0;
+    float u = f * glm::dot(s, h);
+    if (u < 0.0f || u > 1.0f)
+        return false;
+
+    glm::vec3 q = glm::cross(s, edge1);
+    float v = f * glm::dot(dir, q);
+    if (v < 0.0f || u + v > 1.0f)
+        return false;
+
+    // At this stage, ray intersects triangle
+    float t = f * glm::dot(edge2, q);
+    if (t > EPSILON) {
+        if (outT) *outT = t; // Optional: output distance to intersection
+        return true;
+    }
+
+    return false;
+}
+
+bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
+    float tminX, tminY, tminZ;
+    float tmaxX, tmaxY, tmaxZ;
+    float tTemp, tMax, tMin;
+
+    float invX = fabs(ray.x) > EPSILON ? 1.0f / ray.x : 1e8f; // Or std::numeric_limits<float>::max()
+    tminX = (bb.minX - p.x) * invX;
+    tmaxX = (bb.maxX - p.x) * invX;
+
+
+    if (tminX > tmaxX) {
+        tTemp = tmaxX;
+        tmaxX = tminX;
+        tminX = tTemp;
+    }
+
+    float invY = fabs(ray.y) > EPSILON ? 1.0f / ray.y : 1e8f; // Or std::numeric_limits<float>::max()
+    tminY = (bb.minY - p.y) * invY;
+    tmaxY = (bb.maxY - p.y) * invY;
+
+
+    if (tminY > tmaxY) {
+        tTemp = tmaxY;
+        tmaxY = tminY;
+        tminY = tTemp;
+    }
+
+    float invZ = fabs(ray.z) > EPSILON ? 1.0f / ray.z : 1e8f; // Or std::numeric_limits<float>::max()
+    tminZ = (bb.minZ - p.z) * invZ;
+    tmaxZ = (bb.maxZ - p.z) * invZ;
+
+
+    if (tminZ > tmaxZ) {
+        tTemp = tmaxZ;
+        tmaxZ = tminZ;
+        tminZ = tTemp;
+    }
+
+    tMin = max(max(tminX, tminY),tminZ);
+    tMax = min(min(tmaxX, tmaxY),tmaxZ);
+
+    if (tMin > tMax) {
+        return false;
+    }
+    return true;
+}
+
+void BVHrayCasting (glm::vec3 p, glm::vec3 ray, BVH &bvh, Model &model, int &intersections, vector<float> &triangles) {
     if (bvh.left == -1 && bvh.right == -1) {
-        closeBVHs.push_back(bvh);
-        return closeBVHs;
-    }
-
-    if (bvh.left != -1) {
-        BVH &left = model.bvhs[bvh.left];
-        result = getBVH(left, model);
-        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
-    }
-
-    if (bvh.right != -1) {
-        BVH &right = model.bvhs[bvh.right];
-        result = getBVH(right, model);
-        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
-    }
-
-    return closeBVHs;
-}
-
-
-vector<BVH> getCloseBVH (BVH bvh, Model& model, glm::vec3 pos) {
-    //printf("here");
-    vector<BVH> closeBVHs;
-    vector<BVH> result;
-
-    BVH &left = model.bvhs[bvh.left];
-    BVH &right = model.bvhs[bvh.right];
-
-    bool insideLeft = insideBB(left.bb, pos);
-    bool insideRight = insideBB(right.bb, pos);
-
-    if (insideLeft && insideRight) {
-        result = getCloseBVH(left, model, pos);
-        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
-
-        result = getCloseBVH(right, model, pos);
-        closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
-
-        return closeBVHs;
-    }
-
-    // Only left child exists
-    if (insideLeft) {
-        BVH &left = model.bvhs[bvh.left];
-        if (insideBB(left.bb, pos)) {
-            result = getCloseBVH(left, model, pos);
-            closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+        float dist;
+        if (rayIntersectsTriangle(p, ray, model.nodes[bvh.p1].pos,model.nodes[bvh.p2].pos,model.nodes[bvh.p3].pos, &dist)) {
+            intersections++;
+            triangles.push_back(bvh.p1);
+            triangles.push_back(bvh.p2);
+            triangles.push_back(bvh.p3);
+            triangles.push_back(dist);
         }
-        return closeBVHs;
     }
-
-    // Only right child exists
-    if (insideRight) {
+    else {
+        BVH &left = model.bvhs[bvh.left];
         BVH &right = model.bvhs[bvh.right];
-        if (insideBB(right.bb, pos)) {
-            result = getCloseBVH(right, model, pos);
-            closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
+
+        bool insideLeft = rayIntersectsBB(p, ray, left.bb);
+        bool insideRight = rayIntersectsBB(p, ray, right.bb);
+
+        if (insideLeft) {
+            BVHrayCasting(p, ray, left, model, intersections, triangles);
         }
-        return closeBVHs;
+
+        if (insideRight) {
+            BVHrayCasting(p, ray, right, model, intersections, triangles);
+        }
     }
-
-    result = getBVH(bvh, model);
-    closeBVHs.insert(closeBVHs.end(), result.begin(), result.end());
-    return closeBVHs;
 }
-
 
 //------------------------------------------------------------------------------
 //  HARD-body particle–model collision (minimal rewrite, same names / style)
@@ -1546,75 +1616,89 @@ void handleCollisionPM(Node& node, Model& model, Model& m) {
         }
 
         if (model.type == 0) {
-            vector<BVH> closeBVHs = getCloseBVH(model.bvhs[model.bvhs.size() - 1], model, pos);
-            //printf("BVHS SIZE : %d \n", closeBVHs.size());
-            bool inside = true;
-            float minDist = numeric_limits<float>::infinity();
-            Node& closestP =model.nodes[model.bvhs[model.bvhs.size() - 1].p1];
-            glm::vec3 n;
-            for (BVH& bvh : closeBVHs) {
-                Node& n1 = model.nodes[bvh.p1];
-                Node& n2 = model.nodes[bvh.p2];
-                Node& n3 = model.nodes[bvh.p3];
+            glm::vec3 dir = pos - previous_pos;
+            if (glm::length(dir) < EPSILON) return; // Avoid degenerate rays
 
-                glm::vec3 v1 = n2.pos - n1.pos;
-                glm::vec3 v2 = n3.pos - n1.pos;
-                glm::vec3 v3 = pos - n1.pos;
+            dir = glm::normalize(dir);
 
-                glm::vec3 crossProd = glm::cross(v1, v2);
-                float len = glm::length(crossProd);
+            float t_low = 0.0f;
+            float t_high = 1.0f;
+            float t_mid;
 
-                if (len < 1e-6f || glm::any(glm::isnan(crossProd))) {
-                    continue; // skip this triangle
-                }
+            glm::vec3 test_pos;
+            float minDist = std::numeric_limits<float>::infinity();
+            int p1 = -1, p2 = -1, p3 = -1;
 
-                glm::vec3 normal = crossProd / len; // safe normalize
+            const int maxSteps = 10;
+            const float threshold = 1e-6f; // End bisection if t range is small enough
 
-                float d = glm::dot(v3, normal);
-                if (d < EPSILON) {
-                    glm::vec3 future_pos = pos - d * normal;
+            int intersections = 0;
 
-                    float dist = glm::length(future_pos - pos);
-                    if (dist < minDist) {
+            for (int step = 0; step < maxSteps && (t_high - t_low) > threshold; ++step) {
+                t_mid = 0.5f * (t_low + t_high);
+                test_pos = previous_pos + dir * t_mid;
+
+                intersections = 0;
+                std::vector<float> triangles;
+                BVHrayCasting(test_pos, dir, model.bvhs.back(), model, intersections, triangles);
+
+                // Record closest hit if any
+                for (int i = 0; i + 3 < triangles.size(); i += 4) {
+                    float dist = triangles[i + 3];
+                    if (dist < minDist && dist > 0.0f) {
                         minDist = dist;
-                        n = normal;
-
-                        float minPdist = glm::length(v3);
-                        closestP = n1;
-                        if (glm::length(pos - n2.pos) < minPdist) {
-                            minPdist = glm::length(pos - n2.pos);
-                            closestP = n2;
-                        }
-                        if (glm::length(pos - n3.pos) < minPdist) {
-                            minPdist = glm::length(pos - n3.pos);
-                            closestP = n3;
-                        }
+                        p1 = static_cast<int>(triangles[i]);
+                        p2 = static_cast<int>(triangles[i + 1]);
+                        p3 = static_cast<int>(triangles[i + 2]);
                     }
+                }
+
+                // Adjust bisection range
+                if (intersections % 2 == 0) {
+                    t_low = t_mid; // Still outside
                 } else {
-                    inside = true;
+                    printf("collision \n");
+                    t_high = t_mid; // Inside
                 }
             }
 
-            bool hasNaN = std::isnan(n.x) || std::isnan(n.y) || std::isnan(n.z);
-            if (inside && !hasNaN && minDist != numeric_limits<float>::infinity()) {
-                const float correction_strength = 1.0f; // Tune between 0.1f - 0.5f
-                glm::vec3 correction = correction_strength * minDist/2 * n;
-                closestP.pos -= correction;
-                node.predicted_pos += correction;
-                node.hasCollided = true;
-                node.normal = n;
+
+            if (p1 != -1 && p2 != -1 && p3 != -1) {
+
+                glm::vec3 v0 = model.nodes[p1].pos;
+                glm::vec3 v1 = model.nodes[p2].pos;
+                glm::vec3 v2 = model.nodes[p3].pos;
+                glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+
+                float pushAmount = (t_high - t_low);
+                glm::vec3 impulse = pushAmount * dir;
+
+                glm::vec3 corrected_pos;
+
+                if (glm::dot(dir, normal) > 0.0f) {
+                    normal = -normal;
+                    model.nodes[p1].pos += impulse * 1.3f;
+                    model.nodes[p2].pos += impulse * 1.3f;
+                    model.nodes[p3].pos += impulse * 1.3f;
+                    corrected_pos = previous_pos - impulse * 1.3f;
+                }
+                else {
+                    model.nodes[p1].pos -= impulse * 1.3f;
+                    model.nodes[p2].pos -= impulse * 1.3f;
+                    model.nodes[p3].pos -= impulse * 1.3f;
+                    corrected_pos = previous_pos + impulse * 1.3f;
+                }
+
                 updateBVH(model);
+
+
+                // Final position correction
+                node.predicted_pos = corrected_pos;
+                node.hasCollided = true;
+                node.normal = normal; // Flip if needed depending on mesh winding
             }
-            /*
-                CollisionResult result = collisionBVH(m.bvhs[model.bvhs.size() - 1], m, pos);
-
-                if (result.collided) {
-                    node.predicted_pos = result.contact_point;
-                    node.hasCollided = true;
-                    node.normal = result.normal;
-                }*/
-
         }
+
     }
 }
 
@@ -2016,6 +2100,7 @@ void updateSoftNodes(float dt, Model& model) {
             }
             n.vel = (n.predicted_pos - n.pos) / dt_sub;
             n.pos = n.predicted_pos;
+            n.vel *= 0.9999f;
             n.vel = n.vel * (n.normal * friction + (glm::vec3 (1.0f) - n.normal));
             if (n.hasCollided) {
                 if (model.bounciness != 0.0f) {
@@ -2289,11 +2374,11 @@ int main(int argc, char **argv) {
     currentTime = glutGet(GLUT_ELAPSED_TIME);
 
     //models.push_back(makeRigidSphere(1, 20, 20,1, 50, 0,1, 0, glm::vec3(1.0f,1.0f,0.0f),true));
-    //models.push_back(makeSoftSphere(1, 10, 10, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,5,0,glm::vec3(1.0f,0.0f,0.0f), true, true, false));
-    //models.push_back(makeSoftSphere(3, 30, 30,false, 1, 0.5f, 1000, 1000, 5, 0,10,0,50,glm::vec3(0.0f,0.0f,1.0f), true, true));
+    models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,5,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
+    models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, false));
     //models.push_back(makeSoftSphere(1, 20, 20,1, 100, 2, 0, 10, 0, 20));
     models.push_back(makeRigidBox(20, 20, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
-    models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5,0.0f, 0, 0, 0, 0, 1,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, false));
+    models.push_back(makeSoftBox(5, 5, 1.0f, 1, 0.5,0.00001f, 0.01f, 0.01f, 0, 0, 1,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
     //models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), true, false));
     //models.push_back(makeSoftSphere(3, 20, 20,1, 50, 1, 0, 3, 0, 10, true));
 
