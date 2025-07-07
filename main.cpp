@@ -66,6 +66,8 @@ float pauseA = 0.0f;
 
 // Constants
 const float EPSILON = 1e-6f;  // Float Precision
+const float GOLDEN_RATIO = 1.618f;
+const glm::vec3 ORIGIN = glm::vec3 (0.0f);
 
 // Forces
 const glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);  // Gravity vector
@@ -106,19 +108,21 @@ struct AngledSpring {
     float lambda = 0.0f;  // Lambda saved between SubSteps
 };
 
+// Struct used to represent a BB
+struct BB {
+    float minX = std::numeric_limits<float>::infinity(), maxX = -std::numeric_limits<float>::infinity();
+    float minY = std::numeric_limits<float>::infinity(), maxY = -std::numeric_limits<float>::infinity();
+    float minZ = std::numeric_limits<float>::infinity(), maxZ = -std::numeric_limits<float>::infinity();
+};
+
 // Struct used to represent a Tetrahedrons
 struct Tetra {
     int in;  // Index of the point inside the sphere
     vector<unsigned int> out;  // Indexs of the Outer Points
     float volume;  // Volume between Nodes to try to achieve
     float lambda = 0.0f;  // Lambda saved between SubSteps
-};
-
-// Struct used to represent a BB
-struct BB {
-    float minX = std::numeric_limits<float>::infinity(), maxX = -std::numeric_limits<float>::infinity();
-    float minY = std::numeric_limits<float>::infinity(), maxY = -std::numeric_limits<float>::infinity();
-    float minZ = std::numeric_limits<float>::infinity(), maxZ = -std::numeric_limits<float>::infinity();
+    bool surface = false;
+    BB bb;
 };
 
 // Struct used to represent a BVH
@@ -127,9 +131,7 @@ struct BVH {
     int self;
     int left = -1;
     int right = -1;
-    int p1;
-    int p2;
-    int p3;
+    int tetra;
 };
 
 // Struct used for VBOs
@@ -165,16 +167,27 @@ struct Model {
 
 struct Vec3Hash {
     size_t operator()(const glm::vec3& v) const {
-        auto round = [](float x) { return std::round(x * 1e5f); };
-        return std::hash<int>()((int)round(v.x)) ^ std::hash<int>()((int)round(v.y)) ^ std::hash<int>()((int)round(v.z));
+        // Quantize to 1e-4f precision (adjust as needed)
+        int x = static_cast<int>(std::round(v.x * 10000.0f));
+        int y = static_cast<int>(std::round(v.y * 10000.0f));
+        int z = static_cast<int>(std::round(v.z * 10000.0f));
+        size_t h1 = std::hash<int>()(x);
+        size_t h2 = std::hash<int>()(y);
+        size_t h3 = std::hash<int>()(z);
+        return h1 ^ (h2 << 1) ^ (h3 << 2);
     }
 };
 
 struct Vec3Equal {
     bool operator()(const glm::vec3& a, const glm::vec3& b) const {
-        return glm::length(a - b) < 1e-5f;
+        // Same quantization used in hashing
+        return std::abs(a.x - b.x) < 1e-4f &&
+               std::abs(a.y - b.y) < 1e-4f &&
+               std::abs(a.z - b.z) < 1e-4f;
     }
 };
+
+
 
 struct Vec3Less {
     bool operator()(const glm::vec3& a, const glm::vec3& b) const {
@@ -295,6 +308,19 @@ void createBB(Model &model) {
         bb.maxY = std::max(node.pos.y, bb.maxY);
         bb.maxZ = std::max(node.pos.z, bb.maxZ);
     }
+
+    if (bb.minX == bb.maxX) {
+        bb.minX -= 0.001f;
+        bb.maxX += 0.001f;
+    }
+    if (bb.minY == bb.maxY) {
+        bb.minY -= 0.001f;
+        bb.maxY += 0.001f;
+    }
+    if (bb.minZ == bb.maxZ) {
+        bb.minZ -= 0.001f;
+        bb.maxZ += 0.001f;
+    }
     model.bb = bb;
 }
 
@@ -306,7 +332,52 @@ BB createBBPoints(glm::vec3 p1, glm::vec3 p2, glm::vec3 p3) {
     bb.maxX = std::max(std::max(std::max(p1.x, bb.maxX),p2.x),p3.x);
     bb.maxY = std::max(std::max(std::max(p1.y, bb.maxY),p2.y),p3.y);
     bb.maxZ = std::max(std::max(std::max(p1.z, bb.maxZ),p2.z),p3.z);
+    if (bb.minX == bb.maxX) {
+        bb.minX -= 0.001f;
+        bb.maxX += 0.001f;
+    }
+    if (bb.minY == bb.maxY) {
+        bb.minY -= 0.001f;
+        bb.maxY += 0.001f;
+    }
+    if (bb.minZ == bb.maxZ) {
+        bb.minZ -= 0.001f;
+        bb.maxZ += 0.001f;
+    }
     return bb;
+}
+
+void createBBTetra(Tetra &tetra, Model &model) {
+    BB bb;
+    bb.minX = model.nodes[tetra.in].pos.x;
+    bb.maxX = model.nodes[tetra.in].pos.x;
+    bb.minY = model.nodes[tetra.in].pos.y;
+    bb.maxX = model.nodes[tetra.in].pos.y;
+    bb.minZ = model.nodes[tetra.in].pos.z;
+    bb.maxX = model.nodes[tetra.in].pos.z;
+
+    for (int o : tetra.out) {
+        bb.minX = std::min(bb.minX, model.nodes[o].pos.x);
+        bb.minY = std::min(bb.minY, model.nodes[o].pos.y);
+        bb.minZ = std::min(bb.minZ, model.nodes[o].pos.z);
+        bb.maxX = std::max(bb.maxX, model.nodes[o].pos.x);
+        bb.maxY = std::max(bb.maxY, model.nodes[o].pos.y);
+        bb.maxZ = std::max(bb.maxZ, model.nodes[o].pos.z);
+    }
+
+    if (bb.minX == bb.maxX) {
+        bb.minX -= 0.001f;
+        bb.maxX += 0.001f;
+    }
+    if (bb.minY == bb.maxY) {
+        bb.minY -= 0.001f;
+        bb.maxY += 0.001f;
+    }
+    if (bb.minZ == bb.maxZ) {
+        bb.minZ -= 0.001f;
+        bb.maxZ += 0.001f;
+    }
+    tetra.bb = bb;
 }
 
 BB addBB(BB &bb1, BB &bb2) {
@@ -331,6 +402,76 @@ bool insideBB(BB &bb, glm::vec3 p) {
     return false;
 }
 
+bool intersectBB(const BB &bb1, const BB &bb2) {
+    bool x = bb1.maxX >= bb2.minX && bb1.minX <= bb2.maxX;
+    bool y = bb1.maxY >= bb2.minY && bb1.minY <= bb2.maxY;
+    bool z = bb1.maxZ >= bb2.minZ && bb1.minZ <= bb2.maxZ;
+
+    return x && y && z;
+}
+
+
+void createModelVBHTetra(Model &model) {
+    vector<BVH> bvhsTemp;
+    vector<BVH> bvhs;
+
+    int k = 0;
+
+    // Create leaf BVHs
+    for (int i = 0; i < model.tetras.size(); i++) {
+        BVH bvh;
+        createBBTetra(model.tetras[i], model);
+        bvh.tetra = i;
+        bvh.bb = model.tetras[i].bb;
+        bvh.self = k;
+        bvhs.push_back(bvh);
+        bvhsTemp.push_back(bvh);
+        k++;
+    }
+
+    // Agglomerative clustering: merge closest pairs
+    while (bvhsTemp.size() > 1) {
+        float minCost = std::numeric_limits<float>::max();
+        int minI = 0, minJ = 1;
+
+        // Find pair with minimum combined volume
+        for (int i = 0; i < bvhsTemp.size(); ++i) {
+            for (int j = i + 1; j < bvhsTemp.size(); ++j) {
+                BB combined = addBB(bvhsTemp[i].bb, bvhsTemp[j].bb);
+                float cost = (combined.maxX - combined.minX) *
+                             (combined.maxY - combined.minY) *
+                             (combined.maxZ - combined.minZ);
+                if (cost < minCost) {
+                    minCost = cost;
+                    minI = i;
+                    minJ = j;
+                }
+            }
+        }
+
+        BVH first = bvhsTemp[minI];
+        BVH second = bvhsTemp[minJ];
+
+        // Remove in reverse order to avoid index shifts
+        if (minI > minJ) std::swap(minI, minJ);
+        bvhsTemp.erase(bvhsTemp.begin() + minJ);
+        bvhsTemp.erase(bvhsTemp.begin() + minI);
+
+        // Create parent node
+        BVH parent;
+        parent.bb = addBB(first.bb, second.bb);
+        parent.left = first.self;
+        parent.right = second.self;
+        parent.self = k;
+
+        bvhs.push_back(parent);
+        bvhsTemp.push_back(parent);
+        k++;
+    }
+
+    model.bvhs = bvhs;
+}
+/*
 void createModelVBH(Model &model) {
     vector<BVH> bvhsTemp;
     vector<BVH> bvhs;
@@ -395,24 +536,446 @@ void createModelVBH(Model &model) {
     }
 
     model.bvhs = bvhs;
-}
+}*/
 
 
 void updateBVHLeafs (Model &model) {
-    for (int i = 0; i < model.faces.size()/3; i++) {
-        model.bvhs[i].bb = createBBPoints(model.nodes[model.bvhs[i].p1].pos, model.nodes[model.bvhs[i].p2].pos, model.nodes[model.bvhs[i].p3].pos);
+    for (int i = 0; i < model.tetras.size(); i++) {
+        createBBTetra(model.tetras[model.bvhs[i].tetra], model);
+        model.bvhs[i].bb = model.tetras[model.bvhs[i].tetra].bb;
     }
 }
 
 void updateBVH (Model &model) {
     updateBVHLeafs(model);
-    for (int i = model.faces.size()/3; i < model.bvhs.size(); i++) {
+    for (int i = model.tetras.size(); i < model.bvhs.size(); i++) {
         model.bvhs[i].bb = addBB(model.bvhs[model.bvhs[i].left].bb, model.bvhs[model.bvhs[i].right].bb);
     }
 }
 
 
 // Makes a Soft Object with the shape of a Sphere
+Model makeSoftIcoSphere(float radius, int detail, float subStep = 1.0f, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
+                    float compliance = 0.0f, float centerCompliance = 0.0f, float angleStiffness = 0.0f, float cx = 0, float cy = 0, float cz = 0,
+                    glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), bool wireframe = false, bool update = false, bool tetra = false) {
+    vector<Node> vertices;
+    std::unordered_map<glm::vec3, int, Vec3Hash, Vec3Equal> vertexMap;
+    vector<int> faces;
+    vector<Spring> springs;
+    vector<Tetra> tetras;
+
+    Model model;
+
+    // Model Center
+    Node center;
+    center.pos = glm::vec3(cx, cy, cz);
+    center.mass = mass;
+
+    float a = sqrt(radius / (1 + GOLDEN_RATIO * GOLDEN_RATIO));
+    float c = a * GOLDEN_RATIO;
+
+    float x = 0.0f;
+    float y = -c;
+    float z = a;
+    Node node;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 0;
+
+    y = -c;
+    z = -a;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 1;
+
+    x = c;
+    y = -a;
+    z = 0.0f;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 2;
+
+    x = -c;
+    y = -a;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 3;
+
+    x = a;
+    y = 0.0f;
+    z = c;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 4;
+
+    x = a;
+    z = -c;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 5;
+
+    x = -a;
+    z = -c;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 6;
+
+    x = -a;
+    z = c;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 7;
+
+    x = c;
+    y = a;
+    z = 0.0f;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 8;
+
+    x = -c;
+    y = a;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 9;
+
+    x = 0.0f;
+    y = c;
+    z = a;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 10;
+
+    y = c;
+    z = -a;
+    node.pos = glm::normalize(glm::vec3(x + cx, y + cy, z + cz) - center.pos)* radius + center.pos;
+    node.mass = mass;
+    vertices.push_back(node);
+    vertexMap[node.pos] = 11;
+
+    faces.push_back(0); faces.push_back(1); faces.push_back(2);
+    faces.push_back(1); faces.push_back(0); faces.push_back(3);
+    faces.push_back(0); faces.push_back(2); faces.push_back(4);
+    faces.push_back(2); faces.push_back(1); faces.push_back(5);
+    faces.push_back(1); faces.push_back(3); faces.push_back(6);
+    faces.push_back(3); faces.push_back(0); faces.push_back(7);
+    faces.push_back(0); faces.push_back(4); faces.push_back(7);
+    faces.push_back(1); faces.push_back(6); faces.push_back(5);
+    faces.push_back(4); faces.push_back(2); faces.push_back(8);
+    faces.push_back(2); faces.push_back(5); faces.push_back(8);
+    faces.push_back(6); faces.push_back(3); faces.push_back(9);
+    faces.push_back(3); faces.push_back(7); faces.push_back(9);
+    faces.push_back(7); faces.push_back(4); faces.push_back(10);
+    faces.push_back(5); faces.push_back(6); faces.push_back(11);
+    faces.push_back(4); faces.push_back(8); faces.push_back(10);
+    faces.push_back(8); faces.push_back(5); faces.push_back(11);
+    faces.push_back(6); faces.push_back(9); faces.push_back(11);
+    faces.push_back(9); faces.push_back(7); faces.push_back(10);
+    faces.push_back(10); faces.push_back(8); faces.push_back(11);
+    faces.push_back(11); faces.push_back(9); faces.push_back(10);
+
+    for (int i = 0; i < detail; i++) {
+        vector<int> tempFaces;
+        for (int j = 0; j < faces.size(); j+=3) {
+            Node v1 = vertices[faces[j]];
+            Node v2 = vertices[faces[j+1]];
+            Node v3 = vertices[faces[j+2]];
+
+            Node m1;
+            glm::vec3 midpoint1 = (v2.pos + v1.pos) * 0.5f;
+            m1.pos = glm::normalize(midpoint1 - center.pos) * radius + center.pos;
+            m1.mass = mass;
+
+            Node m2;
+            glm::vec3 midpoint2 = (v3.pos + v2.pos) * 0.5f;
+            m2.pos = glm::normalize(midpoint2 - center.pos) * radius + center.pos;
+            m2.mass = mass;
+
+            Node m3;
+            glm::vec3 midpoint3 = (v1.pos + v3.pos) * 0.5f;
+            m3.pos = glm::normalize(midpoint3 - center.pos) * radius + center.pos;
+            m3.mass = mass;
+
+            int i1, i2, i3;
+
+            auto it = vertexMap.find(m1.pos);
+            if (it == vertexMap.end()) {
+                i1 = vertices.size();
+                vertices.push_back(m1);
+                vertexMap[m1.pos] = i1;
+            } else {
+                i1 = it->second;
+            }
+
+            it = vertexMap.find(m2.pos);
+            if (it == vertexMap.end()) {
+                i2 = vertices.size();
+                vertices.push_back(m2);
+                vertexMap[m2.pos] = i2;
+            } else {
+                i2 = it->second;
+            }
+
+            it = vertexMap.find(m3.pos);
+            if (it == vertexMap.end()) {
+                i3 = vertices.size();
+                vertices.push_back(m3);
+                vertexMap[m3.pos] = i3;
+            } else {
+                i3 = it->second;
+            }
+
+
+            tempFaces.push_back(faces[j]);     tempFaces.push_back(i1);     tempFaces.push_back(i3);
+            tempFaces.push_back(i1);           tempFaces.push_back(faces[j + 1]); tempFaces.push_back(i2);
+            tempFaces.push_back(i3);           tempFaces.push_back(i2);     tempFaces.push_back(faces[j + 2]);
+            tempFaces.push_back(i1);           tempFaces.push_back(i2);     tempFaces.push_back(i3);
+
+
+        }
+        faces = tempFaces;
+    }
+
+
+    if (tetra == true) {  // Using Tetrahedrons (uses tetgen)
+        tetgenio in, out;
+        in.numberofpoints = vertices.size();
+        in.pointlist = new REAL[in.numberofpoints * 3];
+
+        for (int i = 0; i < vertices.size(); ++i) {
+            in.pointlist[i * 3 + 0] = vertices[i].pos.x;
+            in.pointlist[i * 3 + 1] = vertices[i].pos.y;
+            in.pointlist[i * 3 + 2] = vertices[i].pos.z;
+        }
+
+        in.numberoffacets = faces.size() / 3;
+        in.facetlist = new tetgenio::facet[in.numberoffacets];
+        in.facetmarkerlist = new int[in.numberoffacets];
+
+        for (int i = 0; i < in.numberoffacets; ++i) {
+            tetgenio::facet& f = in.facetlist[i];
+            f.numberofpolygons = 1;
+            f.polygonlist = new tetgenio::polygon[1];
+            f.numberofholes = 0;
+            f.holelist = nullptr;
+
+            tetgenio::polygon& p = f.polygonlist[0];
+            p.numberofvertices = 3;
+            p.vertexlist = new int[3];
+            p.vertexlist[0] = faces[i * 3 + 0];
+            p.vertexlist[1] = faces[i * 3 + 1];
+            p.vertexlist[2] = faces[i * 3 + 2];
+
+            in.facetmarkerlist[i] = 0;
+        }
+
+        in.numberofregions = 1;
+        in.regionlist = new REAL[4];
+        in.regionlist[0] = cx;
+        in.regionlist[1] = cy;
+        in.regionlist[2] = cz;
+        in.regionlist[3] = 1;
+
+        tetgenbehavior behavior;
+        behavior.parse_commandline((char*)"pa0.1Y");
+        tetrahedralize(&behavior, &in, &out);
+
+        vertices.resize(out.numberofpoints);
+        for (int i = 0; i < out.numberofpoints; i++) {
+            vertices[i].pos = glm::vec3(out.pointlist[i*3], out.pointlist[i*3 + 1], out.pointlist[i*3 + 2]);
+            vertices[i].mass = mass;
+        }
+
+        model.nodes = vertices;
+
+        for (int i = 0; i < out.numberoftetrahedra; ++i) {
+            int a = out.tetrahedronlist[i * 4 + 0];
+            int b = out.tetrahedronlist[i * 4 + 1];
+            int c = out.tetrahedronlist[i * 4 + 2];
+            int d = out.tetrahedronlist[i * 4 + 3];
+
+            vector<int> points {a,b,c,d};
+
+            Tetra t;
+            vector<unsigned int> outT;
+            for (auto& p : points) {
+                if (float dist = glm::length(vertices[p].pos - center.pos); radius - dist > 0.001f) {
+                    t.in = p;
+                }
+                else {
+                    outT.push_back(p);
+                }
+            }
+            bool surface = true;
+            if (outT.size() < 3 || outT.size() == 4) {
+                t.in = a;
+                outT.clear();
+                outT.push_back(b);
+                outT.push_back(c);
+                outT.push_back(d);
+                surface = false;
+            }
+            t.out = outT;
+            t.volume = calculateTetraVolume(t, model);
+            t.surface = surface;
+
+            auto addSpring = [&](int i, int j) {
+                Spring s;
+                s.A = i;
+                s.B = j;
+                s.restLength = glm::length(vertices[i].pos - vertices[j].pos);
+                if (glm::length(vertices[i].pos - center.pos) < radius || glm::length(vertices[j].pos - center.pos) < radius) {
+                    s.compliance = centerCompliance;
+                }
+                else {
+                    s.compliance = compliance;
+                }
+                springs.push_back(s);
+            };
+
+            addSpring(a, b);
+            addSpring(b, c);
+            addSpring(c, a);
+            addSpring(a, d);
+            addSpring(b, d);
+            addSpring(c, d);
+
+            tetras.push_back(t);
+        }
+        model.tetras = tetras;
+
+        delete[] in.trifacelist;
+    }
+    else {
+        model.nodes = vertices;
+
+        vector<AngledSpring> angledSprings;
+
+        for (int i = 0; i < faces.size(); i += 3) {
+            int A = faces[i];
+            int B = faces[i + 1];
+            int C = faces[i + 2];
+
+            Spring s1;
+            Spring s2;
+            Spring s3;
+
+            s1.A = A;
+            s1.B = B;
+            s1.restLength = glm::length(vertices[A].pos - vertices[B].pos);
+            s1.compliance = compliance;
+
+            s2.A = B;
+            s2.B = C;
+            s2.restLength = glm::length(vertices[B].pos - vertices[C].pos);
+            s2.compliance = compliance;
+
+            s3.A = C;
+            s3.B = A;
+            s3.restLength = glm::length(vertices[C].pos - vertices[A].pos);
+            s3.compliance = compliance;
+
+            springs.push_back(s1);
+            springs.push_back(s2);
+            springs.push_back(s3);
+        }
+
+        for (int i = 0; i < faces.size() - 3; i += 3) {
+            int A = faces[i];
+            int B = faces[i + 1];
+            int C = faces[i + 2];
+
+            for (int j = i + 3; j < faces.size(); j += 3) {
+                int D = faces[j];
+                int E = faces[j + 1];
+                int F = faces[j + 2];
+
+                vector<glm::vec2> edgesA;
+                vector<glm::vec2> edgesB;
+
+                edgesA.push_back(glm::vec2(A,B));
+                edgesA.push_back(glm::vec2(B,C));
+                edgesA.push_back(glm::vec2(C,A));
+
+                edgesB.push_back(glm::vec2(D,E));
+                edgesB.push_back(glm::vec2(E,F));
+                edgesB.push_back(glm::vec2(F,D));
+
+                glm::vec2 edge = getEdge(edgesA, edgesB);
+
+                if (edge != glm::vec2(0,0)) {
+                    set<int> triangleA = {A, B, C};
+                    set<int> triangleB = {D, E, F};
+
+                    int uniqueA = -1, uniqueB = -1;
+                    for (int point : triangleA) {
+                        if (edge.x == point) {
+                            uniqueA = point;
+                            break;
+                        }
+                        else if (edge.y == point) {
+                            uniqueA = point;
+                            break;
+                        }
+                    }
+                    for (int point : triangleB) {
+                        if (edge.x == point) {
+                            uniqueB = point;
+                            break;
+                        }
+                        else if (edge.y == point) {
+                            uniqueB = point;
+                            break;
+                        }
+                    }
+
+                    AngledSpring s;
+                    s.A = uniqueA;
+                    s.B = uniqueB;
+                    s.edge = edge;
+                    s.compliance = angleStiffness;
+                    glm::vec3 v1 = glm::cross((vertices[uniqueA].pos - vertices[edge.x].pos), (vertices[edge.y].pos - vertices[edge.x].pos));
+                    glm::vec3 v2 = glm::cross((vertices[uniqueB].pos - vertices[edge.x].pos), (vertices[edge.y].pos - vertices[edge.x].pos));
+                    s.restAngle = acos(calculateAngle(v1, v2));
+                    angledSprings.push_back(s);
+                }
+            }
+        }
+        model.angledSprings = angledSprings;
+    }
+
+    model.faces = vector<unsigned int>(faces.begin(), faces.end());
+    model.springs = springs;
+    model.center = center;
+    model.type = 0;
+    model.distV = model.distH = model.distL = radius;
+    model.subStep = subStep;
+    model.bounciness = bounciness;
+    model.color = color;
+    model.wireframe = wireframe;
+    model.update = update;
+    model.volume = calculateVolume(model);
+    model.compliance = volumeCompliance;
+    model.tetra = tetra;
+    createBB(model);
+    createModelVBHTetra(model);
+
+    uploadModelToGPU(model);
+    printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
+    return model;
+}
+
 Model makeSoftSphere(float radius, int slices, int stacks, float subStep = 1.0f, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
                     float compliance = 0.0f, float centerCompliance = 0.0f, float angleStiffness = 0.0f, float cx = 0, float cy = 0, float cz = 0,
                     glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), bool wireframe = false, bool update = false, bool tetra = false) {
@@ -569,16 +1132,18 @@ Model makeSoftSphere(float radius, int slices, int stacks, float subStep = 1.0f,
                     outT.push_back(p);
                 }
             }
-            if (outT.size() < 4) {
+            bool surface = true;
+            if (outT.size() < 3 || outT.size() == 4) {
                 t.in = a;
                 outT.clear();
                 outT.push_back(b);
                 outT.push_back(c);
                 outT.push_back(d);
+                surface = false;
             }
             t.out = outT;
-
-            t.volume = calculateTetraVolume(t,model);
+            t.volume = calculateTetraVolume(t, model);
+            t.surface = surface;
 
             auto addSpring = [&](int i, int j) {
                 Spring s;
@@ -719,7 +1284,7 @@ Model makeSoftSphere(float radius, int slices, int stacks, float subStep = 1.0f,
     model.compliance = volumeCompliance;
     model.tetra = tetra;
     createBB(model);
-    createModelVBH(model);
+    createModelVBHTetra(model);
 
     uploadModelToGPU(model);
     printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
@@ -1077,6 +1642,7 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
 
             Tetra t;
             vector<unsigned int> outT;
+            bool surface = true;
             for (auto& p : points) {
                 const glm::vec3& pos = vertices[p].pos;
 
@@ -1090,15 +1656,17 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
                     outT.push_back(p);
                 }
             }
-            if (outT.size() < 4) {
+            if (outT.size() < 3 || outT.size() == 4) {
                 t.in = a;
                 outT.clear();
                 outT.push_back(b);
                 outT.push_back(c);
                 outT.push_back(d);
+                surface = false;
             }
             t.out = outT;
             t.volume = calculateTetraVolume(t, model);
+            t.surface = surface;
 
             auto addSpring = [&](int i, int j) {
                 Spring s;
@@ -1254,7 +1822,7 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
     model.update = update;
     model.subStep = subStep;
     createBB(model);
-    createModelVBH(model);
+    createModelVBHTetra(model);
     uploadModelToGPU(model);
     printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
     return model;
@@ -1397,50 +1965,6 @@ bool isPointInTriangle(const glm::vec3& pt, const glm::vec3& a, const glm::vec3&
     return true;
 }
 
-struct CollisionResult {
-    bool collided = false;
-    glm::vec3 normal = glm::vec3(0);
-    glm::vec3 contact_point = glm::vec3(0);
-};
-
-CollisionResult collisionBVH(BVH bvh, Model &model, glm::vec3 pos) {
-    CollisionResult collision;
-    if (bvh.left == -1 && bvh.right == -1) {
-        glm::vec3 v1 = model.nodes[bvh.p2].pos - model.nodes[bvh.p1].pos;
-        glm::vec3 v2 = model.nodes[bvh.p3].pos - model.nodes[bvh.p1].pos;
-        glm::vec3 v3 = pos - model.nodes[bvh.p1].pos;
-
-        glm::vec3 normal = glm::normalize(glm::cross(v1, v2));
-
-        float d = glm::dot(v3, normal);
-        if (d < 0) {
-            glm::vec3 future_pos = pos - d * normal;
-            if (isPointInTriangle(future_pos, model.nodes[bvh.p1].pos, model.nodes[bvh.p2].pos, model.nodes[bvh.p3].pos)) {
-                collision.collided = true;
-                collision.normal = normal;
-                collision.contact_point = future_pos;
-            }
-        }
-        else {
-            collision.collided = false;
-        }
-
-        return collision;
-    }
-    if (pos.x > bvh.bb.minX && pos.x < bvh.bb.maxX && pos.y > bvh.bb.minY && pos.y < bvh.bb.maxY && pos.z > bvh.bb.minZ && pos.z < bvh.bb.maxZ) {
-        CollisionResult leftResult, rightResult;
-        if (bvh.left) leftResult = collisionBVH(model.bvhs[bvh.left], model, pos);
-        if (bvh.right) rightResult = collisionBVH(model.bvhs[bvh.right], model, pos);
-
-        if (leftResult.collided && (!rightResult.collided || glm::length(pos - leftResult.contact_point) < glm::length(pos - rightResult.contact_point))) {
-            return leftResult;
-        }
-        if (rightResult.collided) return rightResult;
-    }
-    collision.collided = false;
-    return collision;
-}
-
 bool rayIntersectsTriangle(
     const glm::vec3& orig, const glm::vec3& dir,
     const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2,
@@ -1451,11 +1975,11 @@ bool rayIntersectsTriangle(
 
     glm::vec3 h = glm::cross(dir, edge2);
     float a = glm::dot(edge1, h);
-    if (a > -EPSILON)
-        return false;  // Backface or parallel — cull
+    //if (a > -EPSILON)
+        //return false;  // Backface or parallel — cull
 
-    //if (fabs(a) < EPSILON)
-    //    return false;  // Backface or parallel — cull
+    if (fabs(a) < EPSILON)
+        return false;  // Backface or parallel — cull
 
 
     float f = 1.0f / a;
@@ -1526,38 +2050,306 @@ bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
     return true;
 }
 
-void BVHrayCasting (glm::vec3 p, glm::vec3 ray, BVH &bvh, Model &model, int &intersections, vector<float> &triangles) {
-    if (bvh.left == -1 && bvh.right == -1) {
-        float dist;
-        if (rayIntersectsTriangle(p, ray, model.nodes[bvh.p1].pos,model.nodes[bvh.p2].pos,model.nodes[bvh.p3].pos, &dist)) {
-            intersections++;
-            triangles.push_back(bvh.p1);
-            triangles.push_back(bvh.p2);
-            triangles.push_back(bvh.p3);
-            triangles.push_back(dist);
+float distanceToPlaneAlongDirection(
+    const glm::vec3& point,  // Ray origin
+    const glm::vec3& dir,    // Ray direction (should be normalized)
+    const glm::vec3& p0,     // A point on the plane
+    const glm::vec3& n)      // Plane normal (assumed normalized)
+{
+    float denom = glm::dot(n, dir);
+    if (abs(denom) < 1e-6f) return -1; // Parallel
+
+    float t = glm::dot(p0 - point, n) / denom;
+    return t;
+}
+
+glm::vec3 farthestPointInDirectionPredicted(const Tetra &tetra, const glm::vec3 &dir, Model &model, glm::vec3 center) {
+    float maxDot = -std::numeric_limits<float>::infinity();
+    glm::vec3 bestPoint;
+
+    auto check = [&](int idx) {
+        glm::vec3 p = model.nodes[idx].predicted_pos;
+        float d = glm::dot(p - center, dir);
+        if (d > maxDot) {
+            maxDot = d;
+            bestPoint = p;
+        }
+    };
+
+    check(tetra.in);
+    for (int o : tetra.out) check(o);
+
+    return bestPoint;
+}
+
+glm::vec3 farthestPointInDirection(const Tetra &tetra, const glm::vec3 &dir, Model &model, glm::vec3 center) {
+    float maxDot = -std::numeric_limits<float>::infinity();
+    glm::vec3 bestPoint;
+
+    auto check = [&](int idx) {
+        glm::vec3 p = model.nodes[idx].pos;
+        float d = glm::dot(p - center, dir);
+        if (d > maxDot) {
+            maxDot = d;
+            bestPoint = p;
+        }
+    };
+
+    check(tetra.in);
+    for (int o : tetra.out) check(o);
+
+    return bestPoint;
+}
+
+
+glm::vec3 Support(const Tetra &tetra1, const Tetra &tetra2, const glm::vec3 &dir, Model &m1, Model &m2, glm::vec3 c1, glm::vec3 c2) {
+    glm::vec3 p1 = farthestPointInDirectionPredicted(tetra1, dir, m1, c1);
+    glm::vec3 p2 = farthestPointInDirection(tetra2, dir, m2, c2);
+    return p1 - p2;
+}
+
+bool lineCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
+    glm::vec3 A = simplex[0];
+    glm::vec3 B = simplex[1];
+
+    glm::vec3 AB = B - A;
+    glm::vec3 AO = ORIGIN - A;
+
+    if (glm::dot(AB, AO) > 0) {
+        dir = glm::cross(glm::cross(AB,AO),AB);
+    }
+    else {
+        simplex.clear();
+        simplex.push_back(A);
+        dir = AO;
+    }
+    return false;
+}
+
+bool triangleCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
+    glm::vec3 A = simplex[0];
+    glm::vec3 B = simplex[1];
+    glm::vec3 C = simplex[2];
+
+    glm::vec3 AB = B - A;
+    glm::vec3 AC = C - A;
+    glm::vec3 AO = ORIGIN - A;
+
+    glm::vec3 ABC = glm::cross(AB, AC);
+
+    if (glm::dot(glm::cross(ABC, AC), AO) > 0) {
+        if (glm::dot(AC, AO) > 0) {
+            simplex.clear();
+            simplex.push_back(A);
+            simplex.push_back(C);
+            dir = glm::cross(glm::cross(AC,AO), AC);
+        }
+        else {
+            simplex.clear();
+            simplex.push_back(A);
+            simplex.push_back(B);
+            return lineCase(simplex, dir);
         }
     }
     else {
-        BVH &left = model.bvhs[bvh.left];
-        BVH &right = model.bvhs[bvh.right];
+        if (glm::dot(AB, ABC) > 0) {
+            simplex.clear();
+            simplex.push_back(A);
+            simplex.push_back(B);
+            return lineCase(simplex, dir);
+        }
+        else {
+            if (glm::dot(ABC, AO) > 0) {
+                dir = ABC;
+            }
+            else {
+                simplex.clear();
+                simplex.push_back(A);
+                simplex.push_back(C);
+                simplex.push_back(B);
+                dir = -ABC;
+            }
+        }
+    }
+    return false;
+}
 
-        bool insideLeft = rayIntersectsBB(p, ray, left.bb);
-        bool insideRight = rayIntersectsBB(p, ray, right.bb);
+bool tetraCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
+    glm::vec3 A = simplex[0];
+    glm::vec3 B = simplex[1];
+    glm::vec3 C = simplex[2];
+    glm::vec3 D = simplex[3];
+
+    glm::vec3 AB = B - A;
+    glm::vec3 AC = C - A;
+    glm::vec3 AD = D - A;
+    glm::vec3 AO = ORIGIN - A;
+
+    glm::vec3 ABC = glm::cross(AB, AC);
+    glm::vec3 ACD = glm::cross(AC, AD);
+    glm::vec3 ADB = glm::cross(AD, AB);
+
+    if (glm::dot(ABC, AO) > 0) {
+        simplex.clear();
+        simplex.push_back(A);
+        simplex.push_back(B);
+        simplex.push_back(C);
+        return triangleCase(simplex, dir);
+    }
+    if (glm::dot(ACD, AO) > 0) {
+        simplex.clear();
+        simplex.push_back(A);
+        simplex.push_back(C);
+        simplex.push_back(D);
+        return triangleCase(simplex, dir);
+    }
+    if (glm::dot(ADB, AO) > 0) {
+        simplex.clear();
+        simplex.push_back(A);
+        simplex.push_back(D);
+        simplex.push_back(B);
+        return triangleCase(simplex, dir);
+    }
+    return true;
+}
+
+bool handleSimplex(vector<glm::vec3> &simplex, glm::vec3 &dir) {
+    if (simplex.size() == 2) {
+        return lineCase(simplex, dir);
+    }
+    if (simplex.size() == 3) {
+        return triangleCase(simplex, dir);
+    }
+    return tetraCase(simplex, dir);
+}
+
+bool GJK (Tetra &tetra1, Tetra &tetra2, Model &m1, Model &m2) {
+    glm::vec3 c1 = (m1.nodes[tetra1.in].predicted_pos + m1.nodes[tetra1.out[0]].predicted_pos + m1.nodes[tetra1.out[1]].predicted_pos + m1.nodes[tetra1.out[2]].predicted_pos) * 0.25f;
+    glm::vec3 c2 = (m2.nodes[tetra2.in].pos + m2.nodes[tetra2.out[0]].pos + m2.nodes[tetra2.out[1]].pos + m2.nodes[tetra2.out[2]].pos) * 0.25f;
+    glm::vec3 d = glm::normalize(c1 - c2);
+    vector<glm::vec3> simplex;
+    simplex.push_back(Support(tetra1, tetra2, d, m1, m2, c1, c2));
+
+    d = ORIGIN - simplex[0];
+    int iteration = 0;
+    const int maxIterations = 30;
+    while (iteration++ < maxIterations) {
+        glm::vec3 A = Support(tetra1, tetra2, d, m1, m2, c1, c2);
+
+        if (glm::dot(A, d) < 0) {
+            return false;
+        }
+        simplex.push_back(A);
+        if (handleSimplex(simplex, d)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool pointInTetra(const glm::vec3 &p, const Tetra &tetra, const Model &model) {
+    glm::vec3 a = model.nodes[tetra.in].pos;
+    glm::vec3 b = model.nodes[tetra.out[0]].pos;
+    glm::vec3 c = model.nodes[tetra.out[1]].pos;
+    glm::vec3 d = model.nodes[tetra.out[2]].pos;
+
+    float v0 = glm::dot(glm::cross(b - a, c - a), d - a);
+    float v1 = glm::dot(glm::cross(b - p, c - p), d - p);
+    float v2 = glm::dot(glm::cross(a - p, c - p), d - p);
+    float v3 = glm::dot(glm::cross(a - p, b - p), d - p);
+    float v4 = glm::dot(glm::cross(a - p, b - p), c - p);
+
+    return (v0 > 0 && v1 > 0 && v2 > 0 && v3 > 0 && v4 > 0) ||
+           (v0 < 0 && v1 < 0 && v2 < 0 && v3 < 0 && v4 < 0);
+}
+
+
+bool tetraIntersect(const Tetra &a, const Tetra &b, const Model &m1, const Model &m2) {
+    // 1. Check if any point of A is inside B
+    for (unsigned int ai : {static_cast<unsigned int>(a.in), a.out[0], a.out[1], a.out[2]}) {
+        if (pointInTetra(m1.nodes[ai].predicted_pos, b, m2)) return true;
+    }
+    // 2. Check if any point of B is inside A
+    for (unsigned int bi : {static_cast<unsigned int>(b.in), b.out[0], b.out[1], b.out[2]}){
+        if (pointInTetra(m2.nodes[bi].pos, a, m1)) return true;
+    }
+    // 3. (Optional) Check triangle-triangle intersection for all face pairs
+    return false;
+}
+
+
+float distanceTetra (Tetra &tetra1, Tetra &tetra2, Model &m1, Model &m2) {
+    float minDist = numeric_limits<float>::infinity();
+    for (int o1 : tetra1.out) {
+        for (int o2 : tetra2.out) {
+            float len = glm::length(m1.nodes[o1].predicted_pos - m2.nodes[o2].pos);
+            if (len < minDist) {
+                minDist = len;
+            }
+        }
+    }
+    return minDist;
+}
+
+int BVHrayCasting (Tetra &tetra, BVH &bvh, Model &m1, Model &m2) {
+    if (bvh.left == -1 && bvh.right == -1) {
+        if (tetraIntersect(tetra, m2.tetras[bvh.tetra], m1, m2)) {
+            return bvh.tetra;
+        }
+
+        return -1;
+    }
+    else {
+        BVH &left = m2.bvhs[bvh.left];
+        BVH &right = m2.bvhs[bvh.right];
+
+        bool insideLeft = intersectBB(tetra.bb, left.bb);
+        bool insideRight = intersectBB(tetra.bb, right.bb);
+
+        int result = -1;
 
         if (insideLeft) {
-            BVHrayCasting(p, ray, left, model, intersections, triangles);
+            result = BVHrayCasting(tetra, left, m1, m2);
         }
 
         if (insideRight) {
-            BVHrayCasting(p, ray, right, model, intersections, triangles);
+            if (result != -1) {
+                int temp = BVHrayCasting(tetra, right, m1, m2);
+                if (temp != -1) {
+                    if (distanceTetra(tetra, m2.tetras[temp], m1, m2) < distanceTetra(tetra, m2.tetras[result], m1, m2)) {
+                        result = temp;
+                    }
+                }
+            }
+            else {
+                result = BVHrayCasting(tetra, right, m1, m2);
+            }
         }
+        return result;
     }
+}
+
+
+bool SameSide(glm::vec3 v1,glm::vec3 v2,glm::vec3 v3,glm::vec3 v4,glm::vec3 p)
+{
+    glm::vec3 normal = glm::cross(v2 - v1, v3 - v1);
+    float dotV4 = glm::dot(normal, v4 - v1);
+    float dotP = glm::dot(normal, p - v1);
+    return (dotV4 <= 0 && dotP <= 0) || (dotV4 >= 0 && dotP >= 0);
+}
+
+bool PointInTetrahedron(glm::vec3 v1,glm::vec3 v2,glm::vec3 v3,glm::vec3 v4,glm::vec3 p)
+{
+    return SameSide(v1, v2, v3, v4, p) &&
+           SameSide(v2, v3, v4, v1, p) &&
+           SameSide(v3, v4, v1, v2, p) &&
+           SameSide(v4, v1, v2, v3, p);
 }
 
 //------------------------------------------------------------------------------
 //  HARD-body particle–model collision (minimal rewrite, same names / style)
 //------------------------------------------------------------------------------
-void handleCollisionPM(Node& node, Model& model, Model& m) {
+void handleCollisionPM(Node& node, Model& model) {
     // Use predicted position during constraint solve
     glm::vec3& pos = node.predicted_pos;
     glm::vec3& previous_pos = node.pos;
@@ -1614,91 +2406,70 @@ void handleCollisionPM(Node& node, Model& model, Model& m) {
             }
             return;
         }
+    }
+}
 
-        if (model.type == 0) {
-            glm::vec3 dir = pos - previous_pos;
-            if (glm::length(dir) < EPSILON) return; // Avoid degenerate rays
+void handleCollisionSS(Model &m1, Model &m2) {
+    for (Tetra& t : m1.tetras) {
+        if (intersectBB(t.bb, m2.bvhs.back().bb) && t.surface) {
+            int tetra = BVHrayCasting(t, m2.bvhs.back(), m1, m2);
+            if (tetra != -1) {
+                glm::vec3 p1 = m2.nodes[m2.tetras[tetra].out[0]].pos;
+                glm::vec3 n1 = glm::normalize(glm::cross(m2.nodes[m2.tetras[tetra].out[1]].pos - p1, m2.nodes[m2.tetras[tetra].out[2]].pos - p1));
 
-            dir = glm::normalize(dir);
+                if (glm::dot(n1, m1.nodes[t.in].pos - m2.nodes[m2.tetras[tetra].in].pos) < 0) n1 = -n1;
 
-            float t_low = 0.0f;
-            float t_high = 1.0f;
-            float t_mid;
+                float tMass = (m2.nodes[m2.tetras[tetra].out[0]].mass + m2.nodes[m2.tetras[tetra].out[1]].mass +m2.nodes[m2.tetras[tetra].out[2]].mass)/3.0f;
 
-            glm::vec3 test_pos;
-            float minDist = std::numeric_limits<float>::infinity();
-            int p1 = -1, p2 = -1, p3 = -1;
-
-            const int maxSteps = 10;
-            const float threshold = 1e-6f; // End bisection if t range is small enough
-
-            int intersections = 0;
-
-            for (int step = 0; step < maxSteps && (t_high - t_low) > threshold; ++step) {
-                t_mid = 0.5f * (t_low + t_high);
-                test_pos = previous_pos + dir * t_mid;
-
-                intersections = 0;
-                std::vector<float> triangles;
-                BVHrayCasting(test_pos, dir, model.bvhs.back(), model, intersections, triangles);
-
-                // Record closest hit if any
-                for (int i = 0; i + 3 < triangles.size(); i += 4) {
-                    float dist = triangles[i + 3];
-                    if (dist < minDist && dist > 0.0f) {
-                        minDist = dist;
-                        p1 = static_cast<int>(triangles[i]);
-                        p2 = static_cast<int>(triangles[i + 1]);
-                        p3 = static_cast<int>(triangles[i + 2]);
+                for (int o : t.out) {
+                    glm::vec3 p = m1.nodes[o].predicted_pos;
+                    if (glm::dot(p - p1, n1) < 0) {
+                        float dist = distanceToPlaneAlongDirection(p, n1, p1, n1);
+                        float ratio = 0.5f;
+                        if (m1.nodes[o].mass != tMass) {
+                            if (m1.nodes[o].mass > tMass) {
+                                ratio = 1.0f - tMass/m1.nodes[o].mass;
+                            }
+                            else {
+                                ratio = 1.0f - m1.nodes[o].mass/tMass;
+                            }
+                        }
+                        m1.nodes[o].hasCollided = true;
+                        m1.nodes[o].normal = n1;
+                        m1.nodes[o].predicted_pos += n1 * ratio * dist;
                     }
                 }
 
-                // Adjust bisection range
-                if (intersections % 2 == 0) {
-                    t_low = t_mid; // Still outside
-                } else {
-                    printf("collision \n");
-                    t_high = t_mid; // Inside
-                }
-            }
+                glm::vec3 p2 = m1.nodes[t.out[0]].predicted_pos;
+                glm::vec3 n2 = glm::normalize(glm::cross(m1.nodes[t.out[1]].predicted_pos - p2, m1.nodes[t.out[2]].predicted_pos - p2));
 
-
-            if (p1 != -1 && p2 != -1 && p3 != -1) {
-
-                glm::vec3 v0 = model.nodes[p1].pos;
-                glm::vec3 v1 = model.nodes[p2].pos;
-                glm::vec3 v2 = model.nodes[p3].pos;
-                glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
-
-                float pushAmount = (t_high - t_low);
-                glm::vec3 impulse = pushAmount * dir;
-
-                glm::vec3 corrected_pos;
-
-                if (glm::dot(dir, normal) > 0.0f) {
-                    normal = -normal;
-                    model.nodes[p1].pos += impulse * 1.3f;
-                    model.nodes[p2].pos += impulse * 1.3f;
-                    model.nodes[p3].pos += impulse * 1.3f;
-                    corrected_pos = previous_pos - impulse * 1.3f;
-                }
-                else {
-                    model.nodes[p1].pos -= impulse * 1.3f;
-                    model.nodes[p2].pos -= impulse * 1.3f;
-                    model.nodes[p3].pos -= impulse * 1.3f;
-                    corrected_pos = previous_pos + impulse * 1.3f;
+                for (int o : m2.tetras[tetra].out) {
+                    glm::vec3 p = m2.nodes[o].pos;
+                    if (glm::dot(p - p2, n2) < 0) {
+                        float dist = distanceToPlaneAlongDirection(p, -n1, p2, n2);
+                        m2.nodes[o].predicted_pos += -n1 * dist;
+                    }
                 }
 
-                updateBVH(model);
-
-
-                // Final position correction
-                node.predicted_pos = corrected_pos;
-                node.hasCollided = true;
-                node.normal = normal; // Flip if needed depending on mesh winding
             }
         }
+    }
+    updateBVH(m2);
+}
 
+void handleCollision(Model &model) {
+    for (Model& m : models) {
+        if (&m != &model) {
+            if (m.type == 0) {
+                handleCollisionSS(model, m);
+                updateBVH(model);
+            }
+            else {
+                for (Node& n : model.nodes) {
+                    handleCollisionPM(n, m);
+                }
+            }
+        }
     }
 }
 
@@ -2090,14 +2861,11 @@ void updateSoftNodes(float dt, Model& model) {
         }
 
 
+
         // === COLLISION ===
+        handleCollision(model);
         for (size_t i = 0; i < model.nodes.size(); ++i) {
             Node& n = model.nodes[i];
-            for (Model& m : models) {
-                if (&m != &model) {
-                    handleCollisionPM(n, m, model);
-                }
-            }
             n.vel = (n.predicted_pos - n.pos) / dt_sub;
             n.pos = n.predicted_pos;
             n.vel *= 0.9999f;
@@ -2113,11 +2881,6 @@ void updateSoftNodes(float dt, Model& model) {
             }
         }
 
-        for (Model& m : models) {
-            if (&m != &model) {
-                handleCollisionPM(model.center, m, model);
-            }
-        }
     }
     
     model.center.vel = (model.center.predicted_pos - model.center.pos) / dt;
@@ -2126,15 +2889,14 @@ void updateSoftNodes(float dt, Model& model) {
     updateGPUpositions(model);
 
     createBB(model);
+    //updateBVH(model);
 
-    if (frame%5 == 0) {
-        updateBVHLeafs(model);
-        return;
-    }
-    else{ if(frame%10 == 0) {
-            updateBVH(model);
-        }
-    }
+    //if (frame % 10 == 0) {
+        //updateBVH(model);  // Full update every 10 frames
+    //}
+    //else if (frame % 5 == 0) {
+        //updateBVHLeafs(model);  // Partial update every 5 frames (but not on frames divisible by 10)
+    //}
 }
 
 
@@ -2240,6 +3002,7 @@ void renderScene(void) {
 
     const float MAX_DT = 1.0f / 30.0f; // Max of 33ms (like 30fps)
     dt = std::min(dt, MAX_DT);
+    //dt = 1.0f / 480.0f;
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
@@ -2374,11 +3137,14 @@ int main(int argc, char **argv) {
     currentTime = glutGet(GLUT_ELAPSED_TIME);
 
     //models.push_back(makeRigidSphere(1, 20, 20,1, 50, 0,1, 0, glm::vec3(1.0f,1.0f,0.0f),true));
-    models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,5,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
-    models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, false));
+    //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,1,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
+    //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
+    models.push_back(makeSoftIcoSphere(1, 0, 2.0f, 1, 0.5f, 0.00000f, 0.00f, 0.00f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
+    //models.push_back(makeSoftIcoSphere(1, 0, 2.0f, 1, 0.5f, 0.00000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20,1, 100, 2, 0, 10, 0, 20));
     models.push_back(makeRigidBox(20, 20, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
-    models.push_back(makeSoftBox(5, 5, 1.0f, 1, 0.5,0.00001f, 0.01f, 0.01f, 0, 0, 1,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    models.push_back(makeSoftBox(5, 5, 2.0f, 100, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    //models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(0.5f,1.0f,0.5f), true, true, true));
     //models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), true, false));
     //models.push_back(makeSoftSphere(3, 20, 20,1, 50, 1, 0, 3, 0, 10, true));
 
