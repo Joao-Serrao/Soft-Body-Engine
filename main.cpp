@@ -2425,15 +2425,8 @@ void handleCollisionSS(Model &m1, Model &m2) {
                     glm::vec3 p = m1.nodes[o].predicted_pos;
                     if (glm::dot(p - p1, n1) < 0) {
                         float dist = distanceToPlaneAlongDirection(p, n1, p1, n1);
-                        float ratio = 0.5f;
-                        if (m1.nodes[o].mass != tMass) {
-                            if (m1.nodes[o].mass > tMass) {
-                                ratio = 1.0f - tMass/m1.nodes[o].mass;
-                            }
-                            else {
-                                ratio = 1.0f - m1.nodes[o].mass/tMass;
-                            }
-                        }
+                        float totalMass = m1.nodes[o].mass + tMass;
+                        float ratio = tMass / totalMass;
                         m1.nodes[o].hasCollided = true;
                         m1.nodes[o].normal = n1;
                         m1.nodes[o].predicted_pos += n1 * ratio * dist;
@@ -3139,11 +3132,11 @@ int main(int argc, char **argv) {
     //models.push_back(makeRigidSphere(1, 20, 20,1, 50, 0,1, 0, glm::vec3(1.0f,1.0f,0.0f),true));
     //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,1,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
-    models.push_back(makeSoftIcoSphere(1, 0, 2.0f, 1, 0.5f, 0.00000f, 0.00f, 0.00f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
-    //models.push_back(makeSoftIcoSphere(1, 0, 2.0f, 1, 0.5f, 0.00000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    //models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.000001f, 0.001f, 0.001f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
+    models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.0000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20,1, 100, 2, 0, 10, 0, 20));
     models.push_back(makeRigidBox(20, 20, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
-    models.push_back(makeSoftBox(5, 5, 2.0f, 100, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
     //models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(0.5f,1.0f,0.5f), true, true, true));
     //models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), true, false));
     //models.push_back(makeSoftSphere(3, 20, 20,1, 50, 1, 0, 3, 0, 10, true));
