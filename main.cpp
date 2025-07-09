@@ -87,6 +87,7 @@ struct Node {
     float mass = 1.0f;  // Point Mass
     bool hasCollided = false;  // Flag to check if Point collided
     glm::vec3 normal = glm::vec3(0.0f);  // Normal of the Surface that the Point collided with
+    glm::vec3 lighNormal = glm::vec3(0.0f);
 };
 
 // Struct to represent the Constraint between Nodes
@@ -553,8 +554,40 @@ void updateBVH (Model &model) {
     }
 }
 
+void computeVertexNormals(Model& model) {
+    // Initialize all normals to zero
+    vector<glm::vec3> normals(model.nodes.size(), glm::vec3(0.0f));
+    vector<int> division(model.nodes.size(), 0);
 
-// Makes a Soft Object with the shape of a Sphere
+    for (size_t i = 0; i < model.faces.size(); i += 3) {
+        int i0 = model.faces[i];
+        int i1 = model.faces[i + 1];
+        int i2 = model.faces[i + 2];
+
+        glm::vec3 v0 = model.nodes[i0].pos;
+        glm::vec3 v1 = model.nodes[i1].pos;
+        glm::vec3 v2 = model.nodes[i2].pos;
+
+        glm::vec3 edge1 = v1 - v0;
+        glm::vec3 edge2 = v2 - v0;
+        glm::vec3 faceNormal = glm::normalize(glm::cross(edge1, edge2));
+
+        normals[i0] += faceNormal;
+        division[i0] += 1;
+        normals[i1] += faceNormal;
+        division[i1] += 1;
+        normals[i2] += faceNormal;
+        division[i2] += 1;
+    }
+
+    for (size_t i = 0; i < normals.size(); ++i) {
+        normals[i] /= division[i];
+        model.nodes[i].lighNormal = glm::normalize(normals[i]);
+    }
+}
+
+
+// Makes a Soft Object with the shape of a IcoSphere
 Model makeSoftIcoSphere(float radius, int detail, float subStep = 1.0f, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
                     float compliance = 0.0f, float centerCompliance = 0.0f, float angleStiffness = 0.0f, float cx = 0, float cy = 0, float cz = 0,
                     glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), bool wireframe = false, bool update = false, bool tetra = false) {
@@ -971,6 +1004,7 @@ Model makeSoftIcoSphere(float radius, int detail, float subStep = 1.0f, float ma
     createBB(model);
     createModelVBHTetra(model);
 
+    computeVertexNormals(model);
     uploadModelToGPU(model);
     printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
     return model;
@@ -1348,6 +1382,7 @@ Model makeRigidSphere(float radius, int slices, int stacks, float mass = 1.0f, f
     model.wireframe = wireframe;
     model.update = update;
     createBB(model);
+    computeVertexNormals(model);
     uploadModelToGPU(model);
     return model;
 }
@@ -1823,6 +1858,7 @@ Model makeSoftBox(int slices, int stacks, float subStep, float mass = 1.0f, floa
     model.subStep = subStep;
     createBB(model);
     createModelVBHTetra(model);
+    computeVertexNormals(model);
     uploadModelToGPU(model);
     printf("Number of points %d Number of Faces %d Number of springs %d \n", (int)model.nodes.size(), (int)model.faces.size(), (int)model.springs.size());
     return model;
@@ -1888,7 +1924,7 @@ Model makeRigidBox(int slices, int stacks, bool volumeBased = false, float mass 
     model.wireframe = wireframe;
     model.update = update;
     createBB(model);
-
+    computeVertexNormals(model);
     uploadModelToGPU(model);
     return model;
 }
@@ -1902,7 +1938,7 @@ void uploadModelToGPU(Model &model)
     vector<Vertex> verts(model.nodes.size());
     for(size_t i=0;i<model.nodes.size();++i){
         verts[i].pos    = model.nodes[i].pos;
-        verts[i].normal = glm::vec3(0.0f); // fill later if you compute normals
+        verts[i].normal = model.nodes[i].lighNormal;
     }
 
     GLModel &g = model.glModel;
@@ -1929,19 +1965,30 @@ void uploadModelToGPU(Model &model)
 //--------------------------------------------------------------
 //  Update only positions inside an interleaved VBO – NEW
 //--------------------------------------------------------------
-void updateGPUpositions(Model &model)
+void updateGPUpositionsAndNormals(Model &model)
 {
     GLsizei stride = sizeof(Vertex);
     glBindBuffer(GL_ARRAY_BUFFER, model.glModel.vboVertices);
-    for(size_t i=0;i<model.nodes.size();++i){
-        GLsizeiptr offset = (GLsizeiptr)(i*stride);
+
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
+        GLsizeiptr baseOffset = static_cast<GLsizeiptr>(i * stride);
+
+        // Update position
         glBufferSubData(GL_ARRAY_BUFFER,
-                        offset,
-                        sizeof(glm::vec3),            // only the position
+                        baseOffset,
+                        sizeof(glm::vec3),
                         &model.nodes[i].pos);
+
+        // Update normal
+        glBufferSubData(GL_ARRAY_BUFFER,
+                        baseOffset + sizeof(glm::vec3),
+                        sizeof(glm::vec3),
+                        &model.nodes[i].lighNormal);
     }
-    glBindBuffer(GL_ARRAY_BUFFER,0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
+
 
 bool isPointInTriangle(const glm::vec3& pt, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
     glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
@@ -2879,7 +2926,8 @@ void updateSoftNodes(float dt, Model& model) {
     model.center.vel = (model.center.predicted_pos - model.center.pos) / dt;
     model.center.pos = model.center.predicted_pos;
 
-    updateGPUpositions(model);
+    computeVertexNormals(model);
+    updateGPUpositionsAndNormals(model);
 
     createBB(model);
     //updateBVH(model);
@@ -2923,7 +2971,7 @@ void updateRigidNodes(float dt, Model& model) {
         center.vel = (center.predicted_pos - center.pos) / dt;
         center.pos = center.predicted_pos;
 
-        updateGPUpositions(model);
+        updateGPUpositionsAndNormals(model);
     }
     createBB(model);
 }
@@ -2947,7 +2995,16 @@ void drawModel(const Model &model) {
     }
 
     glPushMatrix();
-    glColor3f(model.color.x, model.color.y, model.color.z);
+    float ambient[] = { model.color.x * 0.2f, model.color.y * 0.2f, model.color.z * 0.2f, 1.0f };
+    float diffuse[] = { model.color.x, model.color.y, model.color.z, 1.0f };
+    float specular[] = { 0.8f, 0.8f, 0.8f, 1.0f };  // White specular highlights
+    float shininess = 128.0f;  // Higher = sharper highlights
+
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, ambient);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, diffuse);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, specular);
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, shininess);
+
 
     glBindBuffer(GL_ARRAY_BUFFER, g.vboVertices);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.vboIndices);
@@ -3001,12 +3058,35 @@ void renderScene(void) {
     glLoadIdentity();
     gluLookAt(CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ, 0, 0, 0, 0.0f, 1.0f, 0.0f);
 
+    // Light position (try making it follow the camera)
+    float lightPos[4] = {0.0f, 2.0f, 1.0f, 1.0f};  // Positional light
+
+    // Light properties
+    float lightAmbient[4] = {0.2f, 0.2f, 0.2f, 1.0f};  // Low ambient
+    float lightDiffuse[4] = {0.9f, 0.9f, 0.9f, 1.0f};  // Bright diffuse
+    float lightSpecular[4] = {1.0f, 1.0f, 1.0f, 1.0f}; // Full specular
+
+    // Light attenuation (makes light fade with distance)
+    float lightConstantAttenuation = 1.0f;
+    float lightLinearAttenuation = 0.001f;
+    float lightQuadraticAttenuation = 0.0001f;
+
+    // Set light properties
+    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
+    glLightfv(GL_LIGHT0, GL_AMBIENT, lightAmbient);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiffuse);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, lightSpecular);
+    glLightf(GL_LIGHT0, GL_CONSTANT_ATTENUATION, lightConstantAttenuation);
+    glLightf(GL_LIGHT0, GL_LINEAR_ATTENUATION, lightLinearAttenuation);
+    glLightf(GL_LIGHT0, GL_QUADRATIC_ATTENUATION, lightQuadraticAttenuation);
+
     // Draw X, Y, Z Axes
     glBegin(GL_LINES);
     glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(-100.0f, 0.0f, 0.0f); glVertex3f(100.0f, 0.0f, 0.0f);
     glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, -100.0f, 0.0f); glVertex3f(0.0f, 100.0f, 0.0f);
     glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, -100.0f); glVertex3f(0.0f, 0.0f, 100.0f);
     glEnd();
+
 
     if (!paused && dt > 0.00001f) {
         for (Model& m : models) {
@@ -3015,6 +3095,7 @@ void renderScene(void) {
             }
         }
     }
+
 
     for (Model& m : models) {
         drawModel(m);
@@ -3132,13 +3213,13 @@ int main(int argc, char **argv) {
     //models.push_back(makeRigidSphere(1, 20, 20,1, 50, 0,1, 0, glm::vec3(1.0f,1.0f,0.0f),true));
     //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,1,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
-    //models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.000001f, 0.001f, 0.001f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
-    models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.0000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.000001f, 0.001f, 0.001f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.0f), false, true, true));
+    //models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 10, 0.5f, 0.0000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20,1, 100, 2, 0, 10, 0, 20));
-    models.push_back(makeRigidBox(20, 20, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
-    models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    models.push_back(makeRigidBox(2, 2, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
+    //models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.000001f, 0.01f, 0.01f, 0, 0, 1.0,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), false, true, true));
     //models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(0.5f,1.0f,0.5f), true, true, true));
-    //models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), true, false));
+    models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), false, false));
     //models.push_back(makeSoftSphere(3, 20, 20,1, 50, 1, 0, 3, 0, 10, true));
 
     glutDisplayFunc(renderScene);
@@ -3148,6 +3229,24 @@ int main(int argc, char **argv) {
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_NORMALIZE);  // Important for proper lighting
+    glEnable(GL_LIGHT0);
+
+    // Main light (white)
+    float lightPos[4] = {0.0f, 10.0f, 0.0f, 1.0f};
+    float lightAmbient[4] = {0.2f, 0.2f, 0.2f, 1.0f};
+    float lightDiffuse[4] = {0.9f, 0.9f, 0.9f, 1.0f};
+    float lightSpecular[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
+    glLightfv(GL_LIGHT0, GL_AMBIENT, lightAmbient);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiffuse);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, lightSpecular);
+
+    // Global ambient light (very low)
+    float globalAmbient[4] = {0.1f, 0.1f, 0.1f, 1.0f};
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbient);
 
     glutMainLoop();
 
