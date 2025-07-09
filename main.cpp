@@ -30,6 +30,8 @@
 #include <set>
 #include <glm/glm.hpp>
 #include <glm/gtx/hash.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include "tetgen.h"
 
 
@@ -137,6 +139,7 @@ struct BVH {
 
 // Struct used for VBOs
 struct GLModel {
+    GLuint vao = 0;
     GLuint vboVertices = 0;
     GLuint vboIndices = 0;
     GLsizei indexCount = 0;
@@ -199,6 +202,7 @@ struct Vec3Less {
 };
 
 vector<Model> models;  // List of Global Models
+GLuint shaderProgram;
 
 //--------------------------------------------------------------
 // Forward declarations
@@ -1932,35 +1936,44 @@ Model makeRigidBox(int slices, int stacks, bool volumeBased = false, float mass 
 
 void uploadModelToGPU(Model &model)
 {
-    if(model.nodes.empty() || model.faces.empty()) return;
+    if (model.nodes.empty() || model.faces.empty()) return;
 
-    // build interleaved vertices (pos + dummy normal)
-    vector<Vertex> verts(model.nodes.size());
-    for(size_t i=0;i<model.nodes.size();++i){
+    // Prepare vertex buffer
+    std::vector<Vertex> verts(model.nodes.size());
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
         verts[i].pos    = model.nodes[i].pos;
         verts[i].normal = model.nodes[i].lighNormal;
     }
 
     GLModel &g = model.glModel;
-    glGenBuffers(1,&g.vboVertices);
-    glGenBuffers(1,&g.vboIndices);
 
+    // Generate VAO
+    glGenVertexArrays(1, &g.vao);
+    glBindVertexArray(g.vao);
+
+    // VBO for vertex data
+    glGenBuffers(1, &g.vboVertices);
     glBindBuffer(GL_ARRAY_BUFFER, g.vboVertices);
-    glBufferData(GL_ARRAY_BUFFER,
-                 verts.size()*sizeof(Vertex),
-                 verts.data(),
-                 GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER,0);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_DYNAMIC_DRAW);
 
+    // VBO for indices
+    glGenBuffers(1, &g.vboIndices);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.vboIndices);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 model.faces.size()*sizeof(unsigned int),
-                 model.faces.data(),
-                 GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, model.faces.size() * sizeof(unsigned int), model.faces.data(), GL_STATIC_DRAW);
+
+    // Vertex attributes
+    glEnableVertexAttribArray(0); // position
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+
+    glEnableVertexAttribArray(1); // normal
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
+
+    // Unbind VAO (optional for safety)
+    glBindVertexArray(0);
 
     g.indexCount = (GLsizei)model.faces.size();
 }
+
 
 //--------------------------------------------------------------
 //  Update only positions inside an interleaved VBO – NEW
@@ -1972,22 +1985,13 @@ void updateGPUpositionsAndNormals(Model &model)
 
     for (size_t i = 0; i < model.nodes.size(); ++i) {
         GLsizeiptr baseOffset = static_cast<GLsizeiptr>(i * stride);
-
-        // Update position
-        glBufferSubData(GL_ARRAY_BUFFER,
-                        baseOffset,
-                        sizeof(glm::vec3),
-                        &model.nodes[i].pos);
-
-        // Update normal
-        glBufferSubData(GL_ARRAY_BUFFER,
-                        baseOffset + sizeof(glm::vec3),
-                        sizeof(glm::vec3),
-                        &model.nodes[i].lighNormal);
+        glBufferSubData(GL_ARRAY_BUFFER, baseOffset, sizeof(glm::vec3), &model.nodes[i].pos);
+        glBufferSubData(GL_ARRAY_BUFFER, baseOffset + sizeof(glm::vec3), sizeof(glm::vec3), &model.nodes[i].lighNormal);
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
+
 
 
 bool isPointInTriangle(const glm::vec3& pt, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
@@ -2986,46 +2990,23 @@ void updateNodes(float dt, Model& model) {
 }
 
 
-void drawModel(const Model &model) {
+void drawModel(const Model &model)
+{
     const GLModel &g = model.glModel;
-    if(!g.vboVertices) return; // uploaded?
+    if (!g.vao) return;
 
     if (model.wireframe) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
 
-    glPushMatrix();
-    float ambient[] = { model.color.x * 0.2f, model.color.y * 0.2f, model.color.z * 0.2f, 1.0f };
-    float diffuse[] = { model.color.x, model.color.y, model.color.z, 1.0f };
-    float specular[] = { 0.8f, 0.8f, 0.8f, 1.0f };  // White specular highlights
-    float shininess = 128.0f;  // Higher = sharper highlights
 
-    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, ambient);
-    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, diffuse);
-    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, specular);
-    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, shininess);
-
-
-    glBindBuffer(GL_ARRAY_BUFFER, g.vboVertices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.vboIndices);
-
-    glEnableVertexAttribArray(0); // position
-    glEnableVertexAttribArray(1); // normal
-
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),(void*)0);
-    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),(void*)offsetof(Vertex,normal));
-
-    glDrawElements(GL_TRIANGLES, g.indexCount, GL_UNSIGNED_INT, (void*)0);
-
-    glDisableVertexAttribArray(0);
-    glDisableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER,0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);
-
-    glPopMatrix();
+    glBindVertexArray(g.vao);
+    glDrawElements(GL_TRIANGLES, g.indexCount, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
+
 
 
 void changeSize(int w, int h) {
@@ -3055,37 +3036,10 @@ void renderScene(void) {
     //dt = 1.0f / 480.0f;
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glLoadIdentity();
-    gluLookAt(CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ, 0, 0, 0, 0.0f, 1.0f, 0.0f);
+    //glLoadIdentity();
+    //gluLookAt(CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ, 0, 0, 0, 0.0f, 1.0f, 0.0f);
+    glUseProgram(shaderProgram);
 
-    // Light position (try making it follow the camera)
-    float lightPos[4] = {0.0f, 2.0f, 1.0f, 1.0f};  // Positional light
-
-    // Light properties
-    float lightAmbient[4] = {0.2f, 0.2f, 0.2f, 1.0f};  // Low ambient
-    float lightDiffuse[4] = {0.9f, 0.9f, 0.9f, 1.0f};  // Bright diffuse
-    float lightSpecular[4] = {1.0f, 1.0f, 1.0f, 1.0f}; // Full specular
-
-    // Light attenuation (makes light fade with distance)
-    float lightConstantAttenuation = 1.0f;
-    float lightLinearAttenuation = 0.001f;
-    float lightQuadraticAttenuation = 0.0001f;
-
-    // Set light properties
-    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
-    glLightfv(GL_LIGHT0, GL_AMBIENT, lightAmbient);
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiffuse);
-    glLightfv(GL_LIGHT0, GL_SPECULAR, lightSpecular);
-    glLightf(GL_LIGHT0, GL_CONSTANT_ATTENUATION, lightConstantAttenuation);
-    glLightf(GL_LIGHT0, GL_LINEAR_ATTENUATION, lightLinearAttenuation);
-    glLightf(GL_LIGHT0, GL_QUADRATIC_ATTENUATION, lightQuadraticAttenuation);
-
-    // Draw X, Y, Z Axes
-    glBegin(GL_LINES);
-    glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(-100.0f, 0.0f, 0.0f); glVertex3f(100.0f, 0.0f, 0.0f);
-    glColor3f(0.0f, 1.0f, 0.0f); glVertex3f(0.0f, -100.0f, 0.0f); glVertex3f(0.0f, 100.0f, 0.0f);
-    glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(0.0f, 0.0f, -100.0f); glVertex3f(0.0f, 0.0f, 100.0f);
-    glEnd();
 
 
     if (!paused && dt > 0.00001f) {
@@ -3096,8 +3050,22 @@ void renderScene(void) {
         }
     }
 
+    glm::mat4 model = glm::mat4(1.0f);
+    //glm::mat4 view = glm::lookAt(glm::vec3(0,0,0), glm::vec3(0, 1, 0), glm::vec3(0, 1, 0));
+    glm::mat4 view = glm::lookAt(glm::vec3(CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ), glm::vec3(0), glm::vec3(0, 1, 0));
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), 1.0f, 0.1f, 100.0f);
+
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+    glUniform3f(glGetUniformLocation(shaderProgram, "lightPos"), 0.0f, 10.0f, 0.0f);
+    glUniform3f(glGetUniformLocation(shaderProgram, "viewPos"), CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ);
+    glUniform3f(glGetUniformLocation(shaderProgram, "lightColor"), 1.0f, 1.0f, 1.0f);
 
     for (Model& m : models) {
+        glUniform3f(glGetUniformLocation(shaderProgram, "objectColor"), m.color.x, m.color.y, m.color.z);
+
         drawModel(m);
     }
 
@@ -3192,6 +3160,66 @@ void keyManage(unsigned char key, int x, int y) {
     glutPostRedisplay(); // Request scene update
 }
 
+GLuint compileShader(const char* path, GLenum type) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open shader file: " << path << std::endl;
+        return 0;
+    }
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string src = buffer.str();
+    const char* csrc = src.c_str();
+
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &csrc, NULL);
+    glCompileShader(shader);
+
+    GLint success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetShaderInfoLog(shader, 512, NULL, infoLog);
+        std::cerr << "Shader compilation failed for " << path << ":\n" << infoLog << std::endl;
+        return 0;
+    }
+    return shader;
+}
+
+
+GLuint createShaderProgram(const char* vertPath, const char* fragPath) {
+    GLuint vert = compileShader(vertPath, GL_VERTEX_SHADER);
+    if (vert == 0) return 0;
+
+    GLuint frag = compileShader(fragPath, GL_FRAGMENT_SHADER);
+    if (frag == 0) {
+        glDeleteShader(vert);
+        return 0;
+    }
+
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vert);
+    glAttachShader(prog, frag);
+    glLinkProgram(prog);
+
+    GLint success;
+    glGetProgramiv(prog, GL_LINK_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetProgramInfoLog(prog, 512, NULL, infoLog);
+        std::cerr << "Shader program linking failed:\n" << infoLog << std::endl;
+        glDeleteShader(vert);
+        glDeleteShader(frag);
+        glDeleteProgram(prog);
+        return 0;
+    }
+
+    glDeleteShader(vert);
+    glDeleteShader(frag);
+
+    return prog;
+}
+
 int main(int argc, char **argv) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DEPTH | GLUT_DOUBLE | GLUT_RGBA);
@@ -3207,19 +3235,21 @@ int main(int argc, char **argv) {
 
     glewInit();
 
+    shaderProgram = createShaderProgram("vertex.glsl", "fragment.glsl");
+
     previousTime = glutGet(GLUT_ELAPSED_TIME);
     currentTime = glutGet(GLUT_ELAPSED_TIME);
 
     //models.push_back(makeRigidSphere(1, 20, 20,1, 50, 0,1, 0, glm::vec3(1.0f,1.0f,0.0f),true));
     //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,1,0,glm::vec3(1.0f,0.0f,0.0f), true, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20, 2.0f, 1, 0.5f, 0.0f, 0.0f, 0.0f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.0f), true, true, true));
-    models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.000001f, 0.001f, 0.001f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.0f), false, true, true));
-    //models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 10, 0.5f, 0.0000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.5f), true, true, true));
+    models.push_back(makeSoftIcoSphere(1, 2, 2.0f, 1, 0.5f, 0.00000f, 0.00f, 0.00f,0.0f, 0,5,0,glm::vec3(1.0f,1.0f,0.0f), false, true, true));
+    models.push_back(makeSoftIcoSphere(1, 3, 2.0f, 1, 0.5f, 0.000001f, 0.001f, 0.001f,0.0f, 0,10,0,glm::vec3(1.0f,1.0f,0.5f), false, true, true));
     //models.push_back(makeSoftSphere(1, 20, 20,1, 100, 2, 0, 10, 0, 20));
     models.push_back(makeRigidBox(2, 2, false, 1, 1.0f, 0, -2.2, 0, 200, 2, 100));
     //models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.000001f, 0.01f, 0.01f, 0, 0, 1.0,0,3,1,3,glm::vec3(1.0f,1.0f,0.5f), false, true, true));
     //models.push_back(makeSoftBox(5, 5, 2.0f, 1, 0.5f,0.00000f, 0.0f, 0.0f, 0, 0, 1.0,0,3,1,3,glm::vec3(0.5f,1.0f,0.5f), true, true, true));
-    models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), false, false));
+    //models.push_back(makeRigidBox(20, 20, false, 1, 0.5,0, 2, 0, 2, 1, 1,glm::vec3(0.0f,1.0f,0.0f), false, false));
     //models.push_back(makeSoftSphere(3, 20, 20,1, 50, 1, 0, 3, 0, 10, true));
 
     glutDisplayFunc(renderScene);
@@ -3229,24 +3259,6 @@ int main(int argc, char **argv) {
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
-    glEnable(GL_LIGHTING);
-    glEnable(GL_NORMALIZE);  // Important for proper lighting
-    glEnable(GL_LIGHT0);
-
-    // Main light (white)
-    float lightPos[4] = {0.0f, 10.0f, 0.0f, 1.0f};
-    float lightAmbient[4] = {0.2f, 0.2f, 0.2f, 1.0f};
-    float lightDiffuse[4] = {0.9f, 0.9f, 0.9f, 1.0f};
-    float lightSpecular[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-
-    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
-    glLightfv(GL_LIGHT0, GL_AMBIENT, lightAmbient);
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiffuse);
-    glLightfv(GL_LIGHT0, GL_SPECULAR, lightSpecular);
-
-    // Global ambient light (very low)
-    float globalAmbient[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbient);
 
     glutMainLoop();
 

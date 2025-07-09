@@ -86,4 +86,7 @@ else (WIN32) #Linux and Mac
         message(ERROR ": GLUT not found!")
     endif(NOT GLUT_FOUND)
 
+    file(COPY ${CMAKE_SOURCE_DIR}/vertex.glsl ${CMAKE_SOURCE_DIR}/fragment.glsl
+            DESTINATION ${CMAKE_BINARY_DIR})
+
 endif(WIN32)
