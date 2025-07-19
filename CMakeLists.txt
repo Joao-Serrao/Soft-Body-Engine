@@ -1,92 +1,112 @@
 cmake_minimum_required(VERSION 3.5)
+project(SBE)
 
-# Project Name
-PROJECT(S.B.E)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp:llvm")
 
-set(TETGEN_DIR "/home/joao/Downloads/tetgen")
 
-add_executable(${PROJECT_NAME}
-        main.cpp
-        save.cpp
-        ${TETGEN_DIR}/tetgen.cxx
-        ${TETGEN_DIR}/predicates.cxx
+# Paths to packages - change these to match your folder structure
+set(TETGEN_DIR "${CMAKE_SOURCE_DIR}/packages/tetgen")
+set(GLM_DIR "${CMAKE_SOURCE_DIR}/packages/glm")
+set(FREEGLUT_INC "${CMAKE_SOURCE_DIR}/packages/freeglut/include")
+set(FREEGLUT_LIB "${CMAKE_SOURCE_DIR}/packages/freeglut/lib/x64/freeglut.lib")
+set(GLEW_INC "${CMAKE_SOURCE_DIR}/packages/glew/include")
+set(GLEW_LIB "${CMAKE_SOURCE_DIR}/packages/glew/lib/release/x64/glew32.lib")
+set(JSON_INC "${CMAKE_SOURCE_DIR}/packages/json-develop/single_include/nlohmann")
+
+# === Shared sources ===
+set(SHARED_SOURCES
+        supportingLibrary.cpp
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE ${TETGEN_DIR})
+# === Executable 1: Main Engine ===
+add_executable(SBE
+        main.cpp
+        supportingLibrary.cpp
+)
 
+# Include directories
+target_include_directories(SBE PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${TETGEN_DIR}
+        ${GLM_DIR}
+        ${FREEGLUT_INC}
+        ${GLEW_INC}
+        ${JSON_INC}
+)
 
-# Add TetGen to the project
-target_sources(${PROJECT_NAME} PRIVATE ${TETGEN_SRC})
-
-
+# Link libraries
 find_package(OpenGL REQUIRED)
-include_directories(${OpenGL_INCLUDE_DIRS})
-link_directories(${OpenGL_LIBRARY_DIRS})
-add_definitions(${OpenGL_DEFINITIONS})
+find_package(OpenMP REQUIRED)
 
-if(NOT OPENGL_FOUND)
-    message(ERROR " OPENGL not found!")
-endif(NOT OPENGL_FOUND)
+target_link_libraries(SBE PRIVATE
+        ${OPENGL_gl_LIBRARY}
+        ${FREEGLUT_LIB}
+        ${GLEW_LIB}
+        opengl32
+        glu32
+        OpenMP::OpenMP_CXX
+)
 
-if  (WIN32)
+# Copy DLLs
+add_custom_command(TARGET SBE POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/packages/freeglut/bin/freeglut.dll"
+        $<TARGET_FILE_DIR:SBE>
+)
+add_custom_command(TARGET SBE POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/packages/glew/bin/glew32.dll"
+        $<TARGET_FILE_DIR:SBE>
+)
 
-    message(STATUS "Toolkits_DIR set to: " ${TOOLKITS_FOLDER})
-    set(TOOLKITS_FOLDER "" CACHE PATH "Path to Toolkits folder")
+# Copy shaders
+file(COPY
+        ${CMAKE_SOURCE_DIR}/vertex.glsl
+        ${CMAKE_SOURCE_DIR}/fragment.glsl
+        DESTINATION ${CMAKE_BINARY_DIR}
+)
 
-    if (NOT EXISTS "${TOOLKITS_FOLDER}/glut/GL/glut.h" OR NOT EXISTS "${TOOLKITS_FOLDER}/glut/glut32.lib")
-        message(ERROR ": GLUT not found")
-    endif (NOT EXISTS "${TOOLKITS_FOLDER}/glut/GL/glut.h" OR NOT EXISTS "${TOOLKITS_FOLDER}/glut/glut32.lib")
+# Copy additional directory
+file(COPY
+        ${CMAKE_SOURCE_DIR}/levels
+        DESTINATION ${CMAKE_BINARY_DIR}
+)
 
-    if (NOT EXISTS "${TOOLKITS_FOLDER}/glew/GL/glew.h" OR NOT EXISTS "${TOOLKITS_FOLDER}/glew/glew32.lib")
-        message(ERROR ": GLEW not found")
-    endif (NOT EXISTS "${TOOLKITS_FOLDER}/glew/GL/glew.h" OR NOT EXISTS "${TOOLKITS_FOLDER}/glew/glew32.lib")
+# === Executable 2: ModelGenTest ===
+add_executable(ModelGenTest
+        modelGenerator.cpp
+        ${TETGEN_DIR}/tetgen.cxx
+        ${TETGEN_DIR}/predicates.cxx
+        ${SHARED_SOURCES}
+)
 
-    if (NOT EXISTS "${TOOLKITS_FOLDER}/devil/IL/il.h" OR NOT EXISTS "${TOOLKITS_FOLDER}/devil/devIL.lib")
-        message(ERROR ": DevIL not found")
-    endif (NOT EXISTS "${TOOLKITS_FOLDER}/devil/IL/il.h" OR NOT EXISTS "${TOOLKITS_FOLDER}/devil/devIL.lib")
+target_include_directories(ModelGenTest PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${TETGEN_DIR}
+        ${GLM_DIR}
+        ${FREEGLUT_INC}
+        ${GLEW_INC}
+        ${JSON_INC}
+)
 
-    include_directories(${TOOLKITS_FOLDER}/glut ${TOOLKITS_FOLDER}/glew ${TOOLKITS_FOLDER}/devil)
-    target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARIES}
-            ${TOOLKITS_FOLDER}/glut/glut32.lib
-            ${TOOLKITS_FOLDER}/devil/devIL.lib
-            ${TOOLKITS_FOLDER}/glew/glew32.lib )
+target_link_libraries(ModelGenTest PRIVATE
+        ${OPENGL_gl_LIBRARY}
+        ${FREEGLUT_LIB}
+        ${GLEW_LIB}
+        opengl32
+        glu32
+)
 
-    if (EXISTS "${TOOLKITS_FOLDER}/glut/glut32.dll" AND EXISTS "${TOOLKITS_FOLDER}/glew/glew32.dll"
-            AND EXISTS "${TOOLKITS_FOLDER}/devil/devil.dll")
-        file(COPY ${TOOLKITS_FOLDER}/glut/glut32.dll DESTINATION ${CMAKE_BINARY_DIR})
-        file(COPY ${TOOLKITS_FOLDER}/devil/devil.dll DESTINATION ${CMAKE_BINARY_DIR})
-        file(COPY ${TOOLKITS_FOLDER}/glew/glew32.dll DESTINATION ${CMAKE_BINARY_DIR})
-    endif(EXISTS "${TOOLKITS_FOLDER}/glut/glut32.dll" AND EXISTS "${TOOLKITS_FOLDER}/glew/glew32.dll"
-            AND EXISTS "${TOOLKITS_FOLDER}/devil/devil.dll")
-
-    set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
-
-else (WIN32) #Linux and Mac
-
-    set( CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} Wno-deprecated")
-    find_package(GLUT REQUIRED)
-    include_directories(${GLUT_INCLUDE_DIR})
-    link_directories(${GLUT_LIBRARY_DIRS})
-    add_definitions(${GLUT_DEFINITIONS})
-
-    if (NOT APPLE)
-        find_package(GLEW REQUIRED)
-        include_directories(${GLEW_INCLUDE_DIRS})
-        link_libraries(${GLEW_LIBRARIES})
-    endif(NOT APPLE)
-
-    find_package(DevIL REQUIRED)
-    link_libraries(${IL_LIBRARIES} )
-    include_directories(${IL_INCLUDE_DIR})
-
-    target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARIES} ${GLUT_LIBRARIES} ${GLEW_LIBRARIES} ${IL_LIBRARIES})
-    if(NOT GLUT_FOUND)
-        message(ERROR ": GLUT not found!")
-    endif(NOT GLUT_FOUND)
-
-    file(COPY ${CMAKE_SOURCE_DIR}/vertex.glsl ${CMAKE_SOURCE_DIR}/fragment.glsl
-            DESTINATION ${CMAKE_BINARY_DIR})
-
-endif(WIN32)
+add_custom_command(TARGET ModelGenTest POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/packages/freeglut/bin/freeglut.dll"
+        $<TARGET_FILE_DIR:ModelGenTest>
+)
+add_custom_command(TARGET ModelGenTest POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/packages/glew/bin/glew32.dll"
+        $<TARGET_FILE_DIR:ModelGenTest>
+)
