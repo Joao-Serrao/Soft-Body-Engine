@@ -1,6 +1,7 @@
 0 0
 models
-1
-icoSphere3-1 0 4.5 0 1 0 1 0 0 0 0
+2
+icoSphere2-1 0 6 0 1 0 1 0 0 0 0
+sphereRigid 0 2 0 0
 1
 floor 0 -0.8 0 0

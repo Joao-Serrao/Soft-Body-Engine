@@ -3,30 +3,12 @@
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
-#include <glm/gtc/constants.hpp>
-#include <glm/gtx/norm.hpp>
 #include <glm/gtx/hash.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
-#include <cstdio>
 #include <cmath>
-#include <iostream>
-#include <fstream>
 #include <vector>
-#include <sstream>
-#include <string>
 #include <random>
-#include <unordered_set>
-#include <vector>
 #include <unordered_map>
-#include <unordered_set>
-#include <random>
-#include <algorithm>
-#include <string>
-#include <cstdio>
-#include <map>
 #include <memory>
-#include <set>
 #include <GL/glew.h>
 #include <GL/glut.h>
 #include <json.hpp>
@@ -132,14 +114,14 @@ struct Model {
     vector<glm::vec3> nodesPredictedPos;
     vector<glm::vec3> nodesVel;
     vector<glm::vec3> nodesNor;
-    vector<int> collided;
+    vector<unsigned int> collided;
     vector<glm::vec3> collidedNor;
     //-----Constraints Vectors-----//
     vector<unsigned int> faces;  // List of the Index that make up Faces
     vector<Spring> springs;  // List of the Constraints
     vector<AngledSpring> angledSprings;  // List of the Angle Constraints
     vector<Tetra> tetras;  // List of the Tetrahedrons
-    unordered_map<int,vector<int>> springsMap;
+    unordered_map<unsigned int,vector<unsigned int>> springsMap;
     //-----Model Info-----//
     int type; // 0 - Soft; 1 - Box; 2 - Sphere
     float distV, distH, distL;  // Distance between Center and every Plane for Box type; Radius for Sphere type;

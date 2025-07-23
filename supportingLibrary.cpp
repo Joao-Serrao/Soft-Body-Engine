@@ -5,9 +5,9 @@ float calculateVolume(const vector<glm::vec3> &nodesPos, const vector<unsigned i
     float volume = 0.0f;
 
     for (int i = 0; i < faces.size(); i+=3) {
-        glm::vec3 v1 = nodesPos[faces[i]];
-        glm::vec3 v2 = nodesPos[faces[i+1]];
-        glm::vec3 v3 = nodesPos[faces[i+2]];
+        const glm::vec3 v1 = nodesPos[faces[i]];
+        const glm::vec3 v2 = nodesPos[faces[i+1]];
+        const glm::vec3 v3 = nodesPos[faces[i+2]];
 
         volume += glm::dot(v1, glm::cross(v2,v3))/6;
     }
@@ -26,11 +26,11 @@ float calculateTetraVolume(const Tetra &tetra, const vector<glm::vec3> &nodesPos
 
 // Calculates Current Angle between 2 vectors
 float calculateAngle(const glm::vec3 &vec1, const glm::vec3 &vec2) {
-    glm::vec3 v1 = glm::normalize(vec1);
-    glm::vec3 v2 = glm::normalize(vec2);
+    const glm::vec3 v1 = glm::normalize(vec1);
+    const glm::vec3 v2 = glm::normalize(vec2);
 
-    float d1 = glm::length(v1);
-    float d2 = glm::length(v2);
+    const float d1 = glm::length(v1);
+    const float d2 = glm::length(v2);
 
     if (d1 < 1e-6f || d2 < 1e-6f) return 0.0f;
 
@@ -150,9 +150,9 @@ BB addBB(const BB &bb1, const BB &bb2) {
 }
 
 bool insideBB(const BB &bb, glm::vec3 p) {
-    bool x = p.x >= bb.minX && p.x <= bb.maxX;
-    bool y = p.y >= bb.minY && p.y <= bb.maxY;
-    bool z = p.z >= bb.minZ && p.z <= bb.maxZ;
+    const bool x = p.x >= bb.minX && p.x <= bb.maxX;
+    const bool y = p.y >= bb.minY && p.y <= bb.maxY;
+    const bool z = p.z >= bb.minZ && p.z <= bb.maxZ;
 
     if (x && y && z) {
         return true;
@@ -161,9 +161,9 @@ bool insideBB(const BB &bb, glm::vec3 p) {
 }
 
 bool intersectBB(const BB &bb1, const BB &bb2) {
-    bool x = bb1.maxX >= bb2.minX && bb1.minX <= bb2.maxX;
-    bool y = bb1.maxY >= bb2.minY && bb1.minY <= bb2.maxY;
-    bool z = bb1.maxZ >= bb2.minZ && bb1.minZ <= bb2.maxZ;
+    const bool x = bb1.maxX >= bb2.minX && bb1.minX <= bb2.maxX;
+    const bool y = bb1.maxY >= bb2.minY && bb1.minY <= bb2.maxY;
+    const bool z = bb1.maxZ >= bb2.minZ && bb1.minZ <= bb2.maxZ;
 
     return x && y && z;
 }
@@ -255,13 +255,15 @@ void computeVertexNormals(vector<glm::vec3> &normals, const vector<glm::vec3> &n
         const unsigned int i1 = faces[i + 1];
         const unsigned int i2 = faces[i + 2];
 
-        glm::vec3 v0 = nodesPos[i0];
-        glm::vec3 v1 = nodesPos[i1];
-        glm::vec3 v2 = nodesPos[i2];
+        const glm::vec3 v0 = nodesPos[i0];
+        const glm::vec3 v1 = nodesPos[i1];
+        const glm::vec3 v2 = nodesPos[i2];
 
-        glm::vec3 edge1 = v1 - v0;
-        glm::vec3 edge2 = v2 - v0;
+        const glm::vec3 edge1 = v1 - v0;
+        const glm::vec3 edge2 = v2 - v0;
+
         glm::vec3 faceNormal = glm::cross(edge1, edge2);
+
         if (glm::length(faceNormal) > 0.00001f) {
             faceNormal = glm::normalize(faceNormal);
         } else {

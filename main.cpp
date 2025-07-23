@@ -40,6 +40,7 @@ float LookZ = 0.0f;
 
 int timebase = 0, frame = 0;  // FPS
 
+// Statistics
 float springTime = 0.0f;
 int springFrame = 0;
 
@@ -56,18 +57,16 @@ int collisionFrame = 0;
 float currentTime = 0.0f;
 float previousTime = 0.0f;
 
-bool paused = false;  // Pausing Time
-float pauseB = 0.0f;
-float pauseA = 0.0f;
+bool paused = false;
 
 // Constants
-const float EPSILON = 1e-6f;  // Float Precision
-const float GOLDEN_RATIO = 1.618f;
-const glm::vec3 ORIGIN = glm::vec3 (0.0f);
+constexpr float EPSILON = 1e-6f;  // Float Precision
+constexpr float GOLDEN_RATIO = 1.618f;
+constexpr glm::vec3 ORIGIN = glm::vec3 (0.0f);
 
 // Forces
-const glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);  // Gravity vector
-const glm::vec3 friction = glm::vec3(0.99f, 0.99f, 0.99f);  // General vector for friction (test)
+constexpr glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);  // Gravity vector
+constexpr glm::vec3 friction = glm::vec3(0.99f, 0.99f, 0.99f);  // General vector for friction (test)
 
 // Struct for Vertex used in VBOs
 struct Vertex {
@@ -75,38 +74,37 @@ struct Vertex {
     glm::vec3 normal; // Normal (used for light)
 };
 
-Level loadedLevel;
+Level loadedLevel;  // Level that is currently loaded
 vector<Model> models;  // List of Global Models
-vector<int> updateModels;
+vector<int> updateModels;  // List of the index of Models that are updated
 GLuint shaderProgram;
 
 
 
-void uploadModelToGPU(Model &model)
-{
+void uploadModelToGPU(Model &model) {
     if (model.nodesPos.empty() || model.faces.empty()) return;
 
-    // Prepare vertex buffer
-    std::vector<Vertex> verts(model.nodesPos.size());
+    vector<Vertex> verts(model.nodesPos.size());
+
     for (size_t i = 0; i < model.nodesPos.size(); ++i) {
-        verts[i].pos    = model.nodesPos[i];
+        verts[i].pos = model.nodesPos[i];
         verts[i].normal = model.nodesNor[i];
     }
 
-    GLModel &g = model.glModel;
+    auto &[vao, vboVertices, vboIndices, indexCount] = model.glModel;
 
     // Generate VAO
-    glGenVertexArrays(1, &g.vao);
-    glBindVertexArray(g.vao);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
 
     // VBO for vertex data
-    glGenBuffers(1, &g.vboVertices);
-    glBindBuffer(GL_ARRAY_BUFFER, g.vboVertices);
+    glGenBuffers(1, &vboVertices);
+    glBindBuffer(GL_ARRAY_BUFFER, vboVertices);
     glBufferData(GL_ARRAY_BUFFER, sizeof(Vertex) * verts.size(), verts.data(), GL_DYNAMIC_DRAW);
 
     // VBO for indices
-    glGenBuffers(1, &g.vboIndices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.vboIndices);
+    glGenBuffers(1, &vboIndices);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vboIndices);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, model.faces.size() * sizeof(unsigned int), model.faces.data(), GL_STATIC_DRAW);
 
     // Vertex attributes
@@ -119,20 +117,19 @@ void uploadModelToGPU(Model &model)
     // Unbind VAO (optional for safety)
     glBindVertexArray(0);
 
-    g.indexCount = (GLsizei)model.faces.size();
+    indexCount = static_cast<GLsizei>(model.faces.size());
 }
 
 
 //--------------------------------------------------------------
 //  Update only positions inside an interleaved VBO – NEW
 //--------------------------------------------------------------
-void updateGPUpositionsAndNormals(Model &model)
-{
-    GLsizei stride = sizeof(Vertex);
+void updateGPUpositionsAndNormals(const Model &model) {
     glBindBuffer(GL_ARRAY_BUFFER, model.glModel.vboVertices);
 
     for (size_t i = 0; i < model.nodesPos.size(); ++i) {
-        auto baseOffset = static_cast<GLsizeiptr>(i * stride);
+        constexpr GLsizei stride = sizeof(Vertex);
+        const auto baseOffset = static_cast<GLsizeiptr>(i * stride);
         glBufferSubData(GL_ARRAY_BUFFER, baseOffset, sizeof(glm::vec3), &model.nodesPos[i]);
         glBufferSubData(GL_ARRAY_BUFFER, baseOffset + sizeof(glm::vec3), sizeof(glm::vec3), &model.nodesNor[i]);
     }
@@ -141,31 +138,32 @@ void updateGPUpositionsAndNormals(Model &model)
 }
 
 void initializePos(Model &model, const glm::vec3 &pos) {
-    for (auto & nodesPo : model.nodesPos) {
-        nodesPo += pos;
+    for (auto & nodesPos : model.nodesPos) {
+        nodesPos += pos;
     }
     model.nodesPredictedPos = model.nodesPos;
     model.nodesVel = vector<glm::vec3>(model.nodesPos.size(), glm::vec3(0.0f));
 }
 
 void modifySprings(Model &model, const float compliance, const float centerCompliance) {
-    for (Spring& s : model.springs) {
-        if (s.in) {
-            s.compliance = centerCompliance;
+    for (Spring& spring : model.springs) {
+        if (spring.in) {
+            spring.compliance = centerCompliance;
         }
         else {
-            s.compliance = compliance;
+            spring.compliance = compliance;
         }
     }
 }
 
 void modifyAngledSprings(Model &model, const float compliance) {
-    for (AngledSpring& a : model.angledSprings) {
-        a.compliance = compliance;
+    for (AngledSpring& angledSpring : model.angledSprings) {
+        angledSpring.compliance = compliance;
     }
 }
 
-void loadModel(Level &level, const string &path, bool floor, const glm::vec3 &pos = glm::vec3(0.0f), bool customize = false, bool wireframe = false, bool update = false, float springCompliance = 0.0f, float springCenterCompliance = 0.0f, float angleCompliance = 0.0f, float volumeCompliance = 0.0f) {
+void loadModel(Level &level, const string &path, const bool floor, const glm::vec3 &pos = glm::vec3(0.0f), const bool customize = false, const bool wireframe = false, const bool update = false,
+                const float springCompliance = 0.0f, const float springCenterCompliance = 0.0f, const float angleCompliance = 0.0f, const float volumeCompliance = 0.0f) {
     if (fs::exists(path)) {
 
         ifstream modelFile (path);
@@ -179,7 +177,8 @@ void loadModel(Level &level, const string &path, bool floor, const glm::vec3 &po
 
                 initializePos(loaded, pos);
 
-                if (customize) {
+                constexpr int soft = 0;
+                if (customize && loaded.type == soft) {
                     modifySprings(loaded, springCompliance, springCenterCompliance);
 
                     if (!loaded.tetra) {
@@ -192,6 +191,8 @@ void loadModel(Level &level, const string &path, bool floor, const glm::vec3 &po
                 loaded.wireframe = wireframe;
                 loaded.update = update;
 
+                createBB(loaded);
+
                 uploadModelToGPU(loaded);
                 if (floor) {
                     level.floor = loaded;
@@ -201,7 +202,6 @@ void loadModel(Level &level, const string &path, bool floor, const glm::vec3 &po
                 }
             } catch (const nlohmann::json::exception& e) {
                 std::cerr << "Failed to parse model JSON: " << e.what() << '\n';
-                return;
             }
         }
         else {
@@ -247,8 +247,8 @@ void loadLevel(const string& path) {
 
                 levelFile >> modelName >> mX >> mY >> mZ >> customize;
 
-                string modelPath = modelsDir + '/' + modelName + ".json";
-                glm::vec3 pos = glm::vec3(mX, mY, mZ);
+                const string modelPath = modelsDir + '/' + modelName + ".json";
+                const glm::vec3 pos = glm::vec3(mX, mY, mZ);
 
                 if (customize) {
                     bool wireframe, update;
@@ -315,22 +315,22 @@ void loadLevel(const string& path) {
 
 
 bool isPointInTriangle(const glm::vec3& pt, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-    glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+    const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
 
     // Barycentric technique using cross products
-    glm::vec3 edge0 = b - a;
-    glm::vec3 vp0 = pt - a;
-    glm::vec3 c0 = glm::cross(edge0, vp0);
+    const glm::vec3 edge0 = b - a;
+    const glm::vec3 vp0 = pt - a;
+    const glm::vec3 c0 = glm::cross(edge0, vp0);
     if (glm::dot(n, c0) < 0) return false;
 
-    glm::vec3 edge1 = c - b;
-    glm::vec3 vp1 = pt - b;
-    glm::vec3 c1 = glm::cross(edge1, vp1);
+    const glm::vec3 edge1 = c - b;
+    const glm::vec3 vp1 = pt - b;
+    const glm::vec3 c1 = glm::cross(edge1, vp1);
     if (glm::dot(n, c1) < 0) return false;
 
-    glm::vec3 edge2 = a - c;
-    glm::vec3 vp2 = pt - c;
-    glm::vec3 c2 = glm::cross(edge2, vp2);
+    const glm::vec3 edge2 = a - c;
+    const glm::vec3 vp2 = pt - c;
+    const glm::vec3 c2 = glm::cross(edge2, vp2);
     if (glm::dot(n, c2) < 0) return false;
 
     return true;
@@ -339,49 +339,46 @@ bool isPointInTriangle(const glm::vec3& pt, const glm::vec3& a, const glm::vec3&
 bool rayIntersectsTriangle(
     const glm::vec3& orig, const glm::vec3& dir,
     const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2,
-    float* outT = nullptr)
-{
-    glm::vec3 edge1 = v1 - v0;
-    glm::vec3 edge2 = v2 - v0;
+    float* outT = nullptr) {
 
-    glm::vec3 h = glm::cross(dir, edge2);
-    float a = glm::dot(edge1, h);
-    //if (a > -EPSILON)
-        //return false;  // Backface or parallel — cull
+    const glm::vec3 edge1 = v1 - v0;
+    const glm::vec3 edge2 = v2 - v0;
+
+    const glm::vec3 h = glm::cross(dir, edge2);
+    const float a = glm::dot(edge1, h);
 
     if (fabs(a) < EPSILON)
         return false;  // Backface or parallel — cull
 
 
-    float f = 1.0f / a;
-    glm::vec3 s = orig - v0;
-    float u = f * glm::dot(s, h);
+    const float f = 1.0f / a;
+    const glm::vec3 s = orig - v0;
+    const float u = f * glm::dot(s, h);
+
     if (u < 0.0f || u > 1.0f)
         return false;
 
-    glm::vec3 q = glm::cross(s, edge1);
-    float v = f * glm::dot(dir, q);
+    const glm::vec3 q = glm::cross(s, edge1);
+    const float v = f * glm::dot(dir, q);
+
     if (v < 0.0f || u + v > 1.0f)
         return false;
 
-    // At this stage, ray intersects triangle
-    float t = f * glm::dot(edge2, q);
+    const float t = f * glm::dot(edge2, q);
     if (t > EPSILON) {
-        if (outT) *outT = t; // Optional: output distance to intersection
+        if (outT) *outT = t;
         return true;
     }
 
     return false;
 }
 
-bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
-    float tminX, tminY, tminZ;
-    float tmaxX, tmaxY, tmaxZ;
-    float tTemp, tMax, tMin;
+bool rayIntersectsBB (const glm::vec3 &p, const glm::vec3 &ray, const BB &bb) {
+    float tTemp;
 
-    float invX = fabs(ray.x) > EPSILON ? 1.0f / ray.x : 1e8f; // Or std::numeric_limits<float>::max()
-    tminX = (bb.minX - p.x) * invX;
-    tmaxX = (bb.maxX - p.x) * invX;
+    const float invX = fabs(ray.x) > EPSILON ? 1.0f / ray.x : 1e8f;
+    float tminX = (bb.minX - p.x) * invX;
+    float tmaxX = (bb.maxX - p.x) * invX;
 
 
     if (tminX > tmaxX) {
@@ -390,9 +387,9 @@ bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
         tminX = tTemp;
     }
 
-    float invY = fabs(ray.y) > EPSILON ? 1.0f / ray.y : 1e8f; // Or std::numeric_limits<float>::max()
-    tminY = (bb.minY - p.y) * invY;
-    tmaxY = (bb.maxY - p.y) * invY;
+    const float invY = fabs(ray.y) > EPSILON ? 1.0f / ray.y : 1e8f;
+    float tminY = (bb.minY - p.y) * invY;
+    float tmaxY = (bb.maxY - p.y) * invY;
 
 
     if (tminY > tmaxY) {
@@ -401,9 +398,9 @@ bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
         tminY = tTemp;
     }
 
-    float invZ = fabs(ray.z) > EPSILON ? 1.0f / ray.z : 1e8f; // Or std::numeric_limits<float>::max()
-    tminZ = (bb.minZ - p.z) * invZ;
-    tmaxZ = (bb.maxZ - p.z) * invZ;
+    const float invZ = fabs(ray.z) > EPSILON ? 1.0f / ray.z : 1e8f;
+    float tminZ = (bb.minZ - p.z) * invZ;
+    float tmaxZ = (bb.maxZ - p.z) * invZ;
 
 
     if (tminZ > tmaxZ) {
@@ -412,8 +409,8 @@ bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
         tminZ = tTemp;
     }
 
-    tMin = max(max(tminX, tminY),tminZ);
-    tMax = min(min(tmaxX, tmaxY),tmaxZ);
+    const float tMin = max(max(tminX, tminY), tminZ);
+    const float tMax = min(min(tmaxX, tmaxY), tmaxZ);
 
     if (tMin > tMax) {
         return false;
@@ -421,44 +418,20 @@ bool rayIntersectsBB (glm::vec3 p, glm::vec3 ray, BB bb) {
     return true;
 }
 
-float distanceToPlaneAlongDirection(
-    const glm::vec3& point,  // Ray origin
-    const glm::vec3& dir,    // Ray direction (should be normalized)
-    const glm::vec3& p0,     // A point on the plane
-    const glm::vec3& n)      // Plane normal (assumed normalized)
-{
-    float denom = glm::dot(n, dir);
+float distanceToPlaneAlongDirection(const glm::vec3 &rayPoint, const glm::vec3 &rayDir, const glm::vec3 &planePoint, const glm::vec3 &planeNormal){
+    const float denom = glm::dot(planeNormal, rayDir);
     if (abs(denom) < 1e-6f) return -1; // Parallel
 
-    float t = glm::dot(p0 - point, n) / denom;
+    const float t = glm::dot(planePoint - rayPoint, planeNormal) / denom;
     return t;
 }
 
-glm::vec3 farthestPointInDirectionPredicted(const Tetra &tetra, const glm::vec3 &dir, const Model &model, const glm::vec3 center) {
-    float maxDot = -std::numeric_limits<float>::infinity();
-    glm::vec3 bestPoint;
-
-    auto check = [&](int idx) {
-        glm::vec3 p = model.nodesPredictedPos[idx];
-        float d = glm::dot(p - center, dir);
-        if (d > maxDot) {
-            maxDot = d;
-            bestPoint = p;
-        }
-    };
-
-    check(tetra.in);
-    for (const int o : tetra.out) check(o);
-
-    return bestPoint;
-}
-
-glm::vec3 farthestPointInDirection(const Tetra &tetra, const glm::vec3 &dir, const Model &model, const glm::vec3 center) {
+glm::vec3 farthestPointInDirection(const Tetra &tetra, const glm::vec3 &dir, const vector<glm::vec3> &nodesPos, const glm::vec3 center) {
     float maxDot = -std::numeric_limits<float>::infinity();
     glm::vec3 bestPoint;
 
     auto check = [&](const int idx) {
-        const glm::vec3 p = model.nodesPos[idx];
+        const glm::vec3 p = nodesPos[idx];
         const float d = glm::dot(p - center, dir);
         if (d > maxDot) {
             maxDot = d;
@@ -467,24 +440,24 @@ glm::vec3 farthestPointInDirection(const Tetra &tetra, const glm::vec3 &dir, con
     };
 
     check(tetra.in);
-    for (int o : tetra.out) check(o);
+    for (const unsigned int o : tetra.out) check(o);
 
     return bestPoint;
 }
 
 
-glm::vec3 Support(const Tetra &tetra1, const Tetra &tetra2, const glm::vec3 &dir, Model &m1, Model &m2, glm::vec3 c1, glm::vec3 c2) {
-    glm::vec3 p1 = farthestPointInDirectionPredicted(tetra1, dir, m1, c1);
-    glm::vec3 p2 = farthestPointInDirection(tetra2, dir, m2, c2);
+glm::vec3 Support(const Tetra &tetra1, const Tetra &tetra2, const glm::vec3 &dir, const Model &m1, const Model &m2, const glm::vec3 c1, const glm::vec3 c2) {
+    const glm::vec3 p1 = farthestPointInDirection(tetra1, dir, m1.nodesPredictedPos, c1);
+    const glm::vec3 p2 = farthestPointInDirection(tetra2, dir, m2.nodesPos, c2);
     return p1 - p2;
 }
 
 bool lineCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
-    glm::vec3 A = simplex[0];
-    glm::vec3 B = simplex[1];
+    const glm::vec3 A = simplex[0];
+    const glm::vec3 B = simplex[1];
 
-    glm::vec3 AB = B - A;
-    glm::vec3 AO = ORIGIN - A;
+    const glm::vec3 AB = B - A;
+    const glm::vec3 AO = ORIGIN - A;
 
     if (glm::dot(AB, AO) > 0) {
         dir = glm::cross(glm::cross(AB,AO),AB);
@@ -498,15 +471,15 @@ bool lineCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
 }
 
 bool triangleCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
-    glm::vec3 A = simplex[0];
-    glm::vec3 B = simplex[1];
-    glm::vec3 C = simplex[2];
+    const glm::vec3 A = simplex[0];
+    const glm::vec3 B = simplex[1];
+    const glm::vec3 C = simplex[2];
 
-    glm::vec3 AB = B - A;
-    glm::vec3 AC = C - A;
-    glm::vec3 AO = ORIGIN - A;
+    const glm::vec3 AB = B - A;
+    const glm::vec3 AC = C - A;
+    const glm::vec3 AO = ORIGIN - A;
 
-    glm::vec3 ABC = glm::cross(AB, AC);
+    const glm::vec3 ABC = glm::cross(AB, AC);
 
     if (glm::dot(glm::cross(ABC, AC), AO) > 0) {
         if (glm::dot(AC, AO) > 0) {
@@ -529,36 +502,34 @@ bool triangleCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
             simplex.push_back(B);
             return lineCase(simplex, dir);
         }
+        if (glm::dot(ABC, AO) > 0) {
+            dir = ABC;
+        }
         else {
-            if (glm::dot(ABC, AO) > 0) {
-                dir = ABC;
-            }
-            else {
-                simplex.clear();
-                simplex.push_back(A);
-                simplex.push_back(C);
-                simplex.push_back(B);
-                dir = -ABC;
-            }
+            simplex.clear();
+            simplex.push_back(A);
+            simplex.push_back(C);
+            simplex.push_back(B);
+            dir = -ABC;
         }
     }
     return false;
 }
 
 bool tetraCase(vector<glm::vec3> &simplex, glm::vec3 &dir) {
-    glm::vec3 A = simplex[0];
-    glm::vec3 B = simplex[1];
-    glm::vec3 C = simplex[2];
-    glm::vec3 D = simplex[3];
+    const glm::vec3 A = simplex[0];
+    const glm::vec3 B = simplex[1];
+    const glm::vec3 C = simplex[2];
+    const glm::vec3 D = simplex[3];
 
-    glm::vec3 AB = B - A;
-    glm::vec3 AC = C - A;
-    glm::vec3 AD = D - A;
-    glm::vec3 AO = ORIGIN - A;
+    const glm::vec3 AB = B - A;
+    const glm::vec3 AC = C - A;
+    const glm::vec3 AD = D - A;
+    const glm::vec3 AO = ORIGIN - A;
 
-    glm::vec3 ABC = glm::cross(AB, AC);
-    glm::vec3 ACD = glm::cross(AC, AD);
-    glm::vec3 ADB = glm::cross(AD, AB);
+    const glm::vec3 ABC = glm::cross(AB, AC);
+    const glm::vec3 ACD = glm::cross(AC, AD);
+    const glm::vec3 ADB = glm::cross(AD, AB);
 
     if (glm::dot(ABC, AO) > 0) {
         simplex.clear();
@@ -594,16 +565,16 @@ bool handleSimplex(vector<glm::vec3> &simplex, glm::vec3 &dir) {
     return tetraCase(simplex, dir);
 }
 
-bool GJK (Tetra &tetra1, Tetra &tetra2, Model &m1, Model &m2) {
-    glm::vec3 c1 = (m1.nodesPredictedPos[tetra1.in] + m1.nodesPredictedPos[tetra1.out[0]] + m1.nodesPredictedPos[tetra1.out[1]] + m1.nodesPredictedPos[tetra1.out[2]]) * 0.25f;
-    glm::vec3 c2 = (m2.nodesPos[tetra2.in] + m2.nodesPos[tetra2.out[0]] + m2.nodesPos[tetra2.out[1]] + m2.nodesPos[tetra2.out[2]]) * 0.25f;
+bool GJK (const Tetra &tetra1, const Tetra &tetra2, const Model &m1, const Model &m2) {
+    const glm::vec3 c1 = (m1.nodesPredictedPos[tetra1.in] + m1.nodesPredictedPos[tetra1.out[0]] + m1.nodesPredictedPos[tetra1.out[1]] + m1.nodesPredictedPos[tetra1.out[2]]) * 0.25f;
+    const glm::vec3 c2 = (m2.nodesPos[tetra2.in] + m2.nodesPos[tetra2.out[0]] + m2.nodesPos[tetra2.out[1]] + m2.nodesPos[tetra2.out[2]]) * 0.25f;
     glm::vec3 d = glm::normalize(c1 - c2);
     vector<glm::vec3> simplex;
     simplex.push_back(Support(tetra1, tetra2, d, m1, m2, c1, c2));
 
     d = ORIGIN - simplex[0];
     int iteration = 0;
-    const int maxIterations = 30;
+    constexpr int maxIterations = 30;
     while (iteration++ < maxIterations) {
         glm::vec3 A = Support(tetra1, tetra2, d, m1, m2, c1, c2);
 
@@ -619,16 +590,16 @@ bool GJK (Tetra &tetra1, Tetra &tetra2, Model &m1, Model &m2) {
 }
 
 bool pointInTetra(const glm::vec3 &p, const Tetra &tetra, const Model &model) {
-    glm::vec3 a = model.nodesPos[tetra.in];
-    glm::vec3 b = model.nodesPos[tetra.out[0]];
-    glm::vec3 c = model.nodesPos[tetra.out[1]];
-    glm::vec3 d = model.nodesPos[tetra.out[2]];
+    const glm::vec3 a = model.nodesPos[tetra.in];
+    const glm::vec3 b = model.nodesPos[tetra.out[0]];
+    const glm::vec3 c = model.nodesPos[tetra.out[1]];
+    const glm::vec3 d = model.nodesPos[tetra.out[2]];
 
-    float v0 = glm::dot(glm::cross(b - a, c - a), d - a);
-    float v1 = glm::dot(glm::cross(b - p, c - p), d - p);
-    float v2 = glm::dot(glm::cross(a - p, c - p), d - p);
-    float v3 = glm::dot(glm::cross(a - p, b - p), d - p);
-    float v4 = glm::dot(glm::cross(a - p, b - p), c - p);
+    const float v0 = glm::dot(glm::cross(b - a, c - a), d - a);
+    const float v1 = glm::dot(glm::cross(b - p, c - p), d - p);
+    const float v2 = glm::dot(glm::cross(a - p, c - p), d - p);
+    const float v3 = glm::dot(glm::cross(a - p, b - p), d - p);
+    const float v4 = glm::dot(glm::cross(a - p, b - p), c - p);
 
     return (v0 > 0 && v1 > 0 && v2 > 0 && v3 > 0 && v4 > 0) ||
            (v0 < 0 && v1 < 0 && v2 < 0 && v3 < 0 && v4 < 0);
@@ -636,24 +607,23 @@ bool pointInTetra(const glm::vec3 &p, const Tetra &tetra, const Model &model) {
 
 
 bool tetraIntersect(const Tetra &a, const Tetra &b, const Model &m1, const Model &m2) {
-    // 1. Check if any point of A is inside B
-    for (unsigned int ai : {static_cast<unsigned int>(a.in), a.out[0], a.out[1], a.out[2]}) {
+    for (const unsigned int ai : {static_cast<unsigned int>(a.in), a.out[0], a.out[1], a.out[2]}) {
         if (pointInTetra(m1.nodesPredictedPos[ai], b, m2)) return true;
     }
-    // 2. Check if any point of B is inside A
-    for (unsigned int bi : {static_cast<unsigned int>(b.in), b.out[0], b.out[1], b.out[2]}){
+
+    for (const unsigned int bi : {static_cast<unsigned int>(b.in), b.out[0], b.out[1], b.out[2]}){
         if (pointInTetra(m2.nodesPos[bi], a, m1)) return true;
     }
-    // 3. (Optional) Check triangle-triangle intersection for all face pairs
+
     return false;
 }
 
 
-float distanceTetra (Tetra &tetra1, Tetra &tetra2, Model &m1, Model &m2) {
+float distanceTetra (const Tetra &tetra1, const Tetra &tetra2, const Model &m1, const Model &m2) {
     float minDist = numeric_limits<float>::infinity();
-    for (int o1 : tetra1.out) {
-        for (int o2 : tetra2.out) {
-            float len = glm::length(m1.nodesPredictedPos[o1] - m2.nodesPos[o2]);
+    for (const unsigned int o1 : tetra1.out) {
+        for (const unsigned int o2 : tetra2.out) {
+            const float len = glm::length(m1.nodesPredictedPos[o1] - m2.nodesPos[o2]);
             if (len < minDist) {
                 minDist = len;
             }
@@ -662,7 +632,7 @@ float distanceTetra (Tetra &tetra1, Tetra &tetra2, Model &m1, Model &m2) {
     return minDist;
 }
 
-int BVHrayCasting (Tetra &tetra, BVH &bvh, Model &m1, Model &m2) {
+int BVHrayCasting (Tetra &tetra, const BVH &bvh, Model &m1, Model &m2) {
     if (bvh.left == -1 && bvh.right == -1) {
         if (tetraIntersect(tetra, m2.tetras[bvh.tetra], m1, m2)) {
             return bvh.tetra;
@@ -670,47 +640,45 @@ int BVHrayCasting (Tetra &tetra, BVH &bvh, Model &m1, Model &m2) {
 
         return -1;
     }
-    else {
-        BVH &left = m2.bvhs[bvh.left];
-        BVH &right = m2.bvhs[bvh.right];
 
-        bool insideLeft = intersectBB(tetra.bb, left.bb);
-        bool insideRight = intersectBB(tetra.bb, right.bb);
+    const BVH &left = m2.bvhs[bvh.left];
+    const BVH &right = m2.bvhs[bvh.right];
 
-        int result = -1;
+    const bool insideLeft = intersectBB(tetra.bb, left.bb);
+    const bool insideRight = intersectBB(tetra.bb, right.bb);
 
-        if (insideLeft) {
-            result = BVHrayCasting(tetra, left, m1, m2);
-        }
+    int result = -1;
 
-        if (insideRight) {
-            if (result != -1) {
-                int temp = BVHrayCasting(tetra, right, m1, m2);
-                if (temp != -1) {
-                    if (distanceTetra(tetra, m2.tetras[temp], m1, m2) < distanceTetra(tetra, m2.tetras[result], m1, m2)) {
-                        result = temp;
-                    }
+    if (insideLeft) {
+        result = BVHrayCasting(tetra, left, m1, m2);
+    }
+
+    if (insideRight) {
+        if (result != -1) {
+            const int temp = BVHrayCasting(tetra, right, m1, m2);
+            if (temp != -1) {
+                if (distanceTetra(tetra, m2.tetras[temp], m1, m2) < distanceTetra(tetra, m2.tetras[result], m1, m2)) {
+                    result = temp;
                 }
             }
-            else {
-                result = BVHrayCasting(tetra, right, m1, m2);
-            }
         }
-        return result;
+        else {
+            result = BVHrayCasting(tetra, right, m1, m2);
+        }
     }
+    return result;
 }
 
 
-bool SameSide(glm::vec3 v1,glm::vec3 v2,glm::vec3 v3,glm::vec3 v4,glm::vec3 p)
-{
-    glm::vec3 normal = glm::cross(v2 - v1, v3 - v1);
-    float dotV4 = glm::dot(normal, v4 - v1);
-    float dotP = glm::dot(normal, p - v1);
+bool SameSide(const glm::vec3 v1, const glm::vec3 v2, const glm::vec3 v3, const glm::vec3 v4, const glm::vec3 p) {
+    const glm::vec3 normal = glm::cross(v2 - v1, v3 - v1);
+    const float dotV4 = glm::dot(normal, v4 - v1);
+    const float dotP = glm::dot(normal, p - v1);
+
     return (dotV4 <= 0 && dotP <= 0) || (dotV4 >= 0 && dotP >= 0);
 }
 
-bool PointInTetrahedron(glm::vec3 v1,glm::vec3 v2,glm::vec3 v3,glm::vec3 v4,glm::vec3 p)
-{
+bool PointInTetrahedron(const glm::vec3 v1, const glm::vec3 v2, const glm::vec3 v3, const glm::vec3 v4,glm::vec3 p) {
     return SameSide(v1, v2, v3, v4, p) &&
            SameSide(v2, v3, v4, v1, p) &&
            SameSide(v3, v4, v1, v2, p) &&
@@ -718,31 +686,33 @@ bool PointInTetrahedron(glm::vec3 v1,glm::vec3 v2,glm::vec3 v3,glm::vec3 v4,glm:
 }
 
 //------------------------------------------------------------------------------
-//  HARD-body particle–model collision (minimal rewrite, same names / style)
+//  HARD-body particle–model collision
 //------------------------------------------------------------------------------
-void handleCollisionPM(Model &model, int node, Model& m) {
-    // Use predicted position during constraint solve
-    glm::vec3& pos = model.nodesPredictedPos[node];
-    glm::vec3& previous_pos = model.nodesPos[node];
+void handleCollisionPM(Model &model, const int node, const Model& m) {
+
+    const glm::vec3& pos = model.nodesPredictedPos[node];
+    const glm::vec3& previous_pos = model.nodesPos[node];
 
     if (pos.x > m.bb.minX && pos.x < m.bb.maxX && pos.y > m.bb.minY && pos.y < m.bb.maxY && pos.z > m.bb.minZ && pos.z < m.bb.maxZ) {
         if (m.type == 1) {
             // -------- A. Axis-Aligned Box --------------
-            glm::vec3 c = m.nodesPos[m.nodesPos.size() - 1];
-            float H = m.distH, V = m.distV, L = m.distL;
+            const glm::vec3 c = m.nodesPos[m.nodesPos.size() - 1];
+            const float H = m.distH, V = m.distV, L = m.distL;
 
             if (pos.x > c.x - H && pos.x < c.x + H &&
                 pos.y > c.y - V && pos.y < c.y + V &&
                 pos.z > c.z - L && pos.z < c.z + L) {
 
 
-                float dx = std::min(c.x + H - previous_pos.x, previous_pos.x - (c.x - H));
-                float dy = std::min(c.y + V - previous_pos.y, previous_pos.y - (c.y - V));
-                float dz = std::min(c.z + L - previous_pos.z, previous_pos.z - (c.z - L));
+                const float dx = std::min(c.x + H - previous_pos.x, previous_pos.x - (c.x - H));
+                const float dy = std::min(c.y + V - previous_pos.y, previous_pos.y - (c.y - V));
+                const float dz = std::min(c.z + L - previous_pos.z, previous_pos.z - (c.z - L));
 
                 glm::vec3 n(0.0f);
                 float pen = dx;
+
                 n = glm::vec3((pos.x > c.x ? c.x + H : c.x - H), pos.y, pos.z);
+
                 glm::vec3 normal = glm::vec3((pos.x > c.x ? 1.0f : -1.0f), 0.0f, 0.0f);
                 if (dy < pen) { pen = dy; n = glm::vec3(pos.x, (pos.y > c.y ? c.y + V : c.y - V), pos.z); normal = glm::vec3(0.0f, (pos.y > c.y ? 1.0f : -1.0f), 0.0f);}
                 if (dz < pen) { pen = dz; n = glm::vec3(pos.x, pos.y, (pos.z > c.z ? c.z + L : c.z - L)); normal = glm::vec3(0.0f, 0.0f, (pos.z > c.z ? 1.0f : -1.0f));}
@@ -756,18 +726,17 @@ void handleCollisionPM(Model &model, int node, Model& m) {
 
         if (m.type == 2) {
             // -------- B. Sphere --------------
-            glm::vec3 delta = pos - m.nodesPos[m.nodesPos.size() - 1];
-            float r = m.distH;
-            float d = glm::length(delta);
+            const glm::vec3 delta = pos - m.nodesPos[m.nodesPos.size() - 1];
+            const float radius = m.distH;
+            const float len = glm::length(delta);
 
-            if (d <= r) {
-                glm::vec3 normal = glm::normalize(delta);
+            if (len <= radius) {
+                const glm::vec3 normal = glm::normalize(delta);
 
-                model.nodesPredictedPos[node] = m.nodesPos[m.nodesPos.size() - 1] + normal * r;
+                model.nodesPredictedPos[node] = m.nodesPos[m.nodesPos.size() - 1] + normal * radius;
                 model.collided.push_back(node);
                 model.collidedNor.push_back(normal);
             }
-            return;
         }
     }
 }
@@ -775,16 +744,19 @@ void handleCollisionPM(Model &model, int node, Model& m) {
 void handleCollisionSS(Model &m1, Model &m2) {
     #pragma omp parallel
 {
-    std::vector<int> local_collided;
+    std::vector<unsigned int> local_collided;
     std::vector<glm::vec3> local_collidedNor;
 
     #pragma omp for schedule(dynamic, 4)
     for (int i = 0; i < m1.tetras.size(); i++) {
         Tetra& t = m1.tetras[i];
+
         if (intersectBB(t.bb, m2.bb) && t.surface) {
-            int tetra = BVHrayCasting(t, m2.bvhs.back(), m1, m2);
+            const int tetra = BVHrayCasting(t, m2.bvhs.back(), m1, m2);
+
             if (tetra != -1) {
-                glm::vec3 p1 = m2.nodesPos[m2.tetras[tetra].out[0]];
+                const glm::vec3 p1 = m2.nodesPos[m2.tetras[tetra].out[0]];
+
                 glm::vec3 n1 = glm::normalize(glm::cross(
                     m2.nodesPos[m2.tetras[tetra].out[1]] - p1,
                     m2.nodesPos[m2.tetras[tetra].out[2]] - p1
@@ -799,28 +771,30 @@ void handleCollisionSS(Model &m1, Model &m2) {
                     m2.nodesMass[m2.tetras[tetra].out[2]]
                 ) / 3.0f;
 
-                for (int o : t.out) {
-                    glm::vec3 p = m1.nodesPredictedPos[o];
+                for (const unsigned int o : t.out) {
+                    const glm::vec3 p = m1.nodesPredictedPos[o];
+
                     if (glm::dot(p - p1, n1) < 0) {
-                        float dist = distanceToPlaneAlongDirection(p, n1, p1, n1);
-                        float totalMass = m1.nodesMass[o] + tMass;
-                        float ratio = tMass / totalMass;
+                        const float dist = distanceToPlaneAlongDirection(p, n1, p1, n1);
+                        const float totalMass = m1.nodesMass[o] + tMass;
+                        const float ratio = tMass / totalMass;
                         local_collided.push_back(o);
                         local_collidedNor.push_back(n1);
                         m1.nodesPredictedPos[o] += n1 * ratio * dist;
                     }
                 }
 
-                glm::vec3 p2 = m1.nodesPredictedPos[t.out[0]];
-                glm::vec3 n2 = glm::normalize(glm::cross(
+                const glm::vec3 p2 = m1.nodesPredictedPos[t.out[0]];
+                const glm::vec3 n2 = glm::normalize(glm::cross(
                     m1.nodesPredictedPos[t.out[1]] - p2,
                     m1.nodesPredictedPos[t.out[2]] - p2
                 ));
 
-                for (int o : m2.tetras[tetra].out) {
-                    glm::vec3 p = m2.nodesPos[o];
+                for (const unsigned int o : m2.tetras[tetra].out) {
+                    const glm::vec3 p = m2.nodesPos[o];
+
                     if (glm::dot(p - p2, n2) < 0) {
-                        float dist = distanceToPlaneAlongDirection(p, -n1, p2, n2);
+                        const float dist = distanceToPlaneAlongDirection(p, -n1, p2, n2);
                         m2.nodesPredictedPos[o] += -n1 * dist;
                     }
                 }
@@ -848,8 +822,8 @@ void handleCollision(Model &model) {
                 updateBVH(model);
             }
             else {
-                for (size_t i = 0; i < model.nodesPos.size(); i++) {
-                    handleCollisionPM(model, i, m);
+                for (size_t node = 0; node < model.nodesPos.size(); node++) {
+                    handleCollisionPM(model, node, m);
                 }
             }
         }
@@ -857,174 +831,145 @@ void handleCollision(Model &model) {
 }
 
 
-void resolveCubeCollision(Model &model, glm::vec3 v, Model& m, bool useAnisotropicFriction) {
-    float cx = m.nodesPos[model.nodesPos.size() - 1].x;
-    float cy = m.nodesPos[model.nodesPos.size() - 1].y;
-    float cz = m.nodesPos[model.nodesPos.size() - 1].z;
-    float H  = m.distH;           // half-width  (X)
-    float V  = m.distV;           // half-height (Y)
-    float L  = m.distL;           // half-length (Z)
+bool resolveCubeCollision(Model &model, const glm::vec3& point, const Model& m) {
+    if (point.x > m.bb.minX && point.x < m.bb.maxX &&
+        point.y > m.bb.minY && point.y < m.bb.maxY &&
+        point.z > m.bb.minZ && point.z < m.bb.maxZ) {
 
-    // -------- 1. is the point inside?  ------------------------------------
-    if ( v.x > cx - H && v.x < cx + H &&
-         v.y > cy - V && v.y < cy + V &&
-         v.z > cz - L && v.z < cz + L )
-    {
-        // -------- 2. find smallest overlap & its face normal -------------
-        float dx = std::min(cx + H - v.x, v.x - (cx - H));
-        float dy = std::min(cy + V - v.y, v.y - (cy - V));
-        float dz = std::min(cz + L - v.z, v.z - (cz - L));
+        const glm::vec3 modelCenter = m.nodesPos.back();
+        const float H = m.distH, V = m.distV, L = m.distL;
 
-        glm::vec3 n(0.0f);            // normal pointing out of the cube
-        float     pen = dx;           // penetration depth along that normal
+        const float dx = std::min(modelCenter.x + H - point.x, point.x - (modelCenter.x - H));
+        const float dy = std::min(modelCenter.y + V - point.y, point.y - (modelCenter.y - V));
+        const float dz = std::min(modelCenter.z + L - point.z, point.z - (modelCenter.z - L));
 
-        n = glm::vec3((v.x > cx ? 1.0f : -1.0f), 0.0f, 0.0f);
-        if (dy < pen) { pen = dy; n = glm::vec3(0.0f, (v.y > cy ? 1.0f : -1.0f), 0.0f); }
-        if (dz < pen) { pen = dz; n = glm::vec3(0.0f, 0.0f, (v.z > cz ? 1.0f : -1.0f)); }
+        float pen = dx;
+        glm::vec3 normal(1.0f, 0.0f, 0.0f);
 
-        // -------- 3. push the node out & reflect its velocity ------------
-        model.nodesPos[model.nodesPos.size() - 1] += n * pen;          // positional correction
-        float vn = glm::dot(model.nodesVel[model.nodesPos.size() - 1], n);
-        if (vn < 0.0f) {
-            glm::vec3 tangentVel = model.nodesVel[model.nodesPos.size() - 1] - vn * n;  // Remove normal component
-            model.nodesVel[model.nodesPos.size() - 1] -= friction * tangentVel;  // Apply friction
+        if (dy < pen) {
+            pen = dy;
+            normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
+        if (dz < pen) {
+            pen = dz;
+            normal = glm::vec3(0.0f, 0.0f, 1.0f);
+        }
 
-            // Bounce (normal component)
-            float bounciness = max(model.bounciness, m.bounciness);
-            model.nodesVel[model.nodesPos.size() - 1] -= (1.0f + bounciness) * vn * n;
+        if (glm::dot(point - modelCenter, normal) < 0.0f)
+            normal = -normal;
+
+        const glm::vec3 correctedPos = point + normal * pen;
+
+        const unsigned int center = model.nodesPos.size() - 1;
+        model.nodesPredictedPos[center] += correctedPos - point;
+        model.collided.push_back(center);
+        model.collidedNor.push_back(normal);
+
+        return true;
+        }
+    return false;
+}
+
+
+void handleCollisionBM(Model &model, const Model &m) {
+    constexpr int soft = 0;
+    constexpr int axisAlignedBox = 1;
+    constexpr int sphere = 2;
+
+    const unsigned int center = model.nodesPos.size() - 1;
+
+    if (m.type == axisAlignedBox) {
+        for (const auto& point : model.nodesPredictedPos) {
+            if (resolveCubeCollision(model, point, m)) {
+                return;
+            }
+        }
+    }
+
+    if (m.type == sphere) {
+        const glm::vec3 sphereCenter = m.nodesPos.back();
+        const float radius = m.distH;
+
+        for (const auto& point : model.nodesPredictedPos) {
+            const glm::vec3 delta = point - sphereCenter;
+            const float len = glm::length(delta);
+
+            if (len < radius)
+            {
+                const glm::vec3 normal = (len > 1e-6f) ? delta / len : glm::vec3(0.0f, 1.0f, 0.0f);
+                const float pen = radius - len;
+
+                model.nodesPredictedPos[center] += normal * pen;;
+                model.collided.push_back(center);
+                model.collidedNor.push_back(normal);
+            }
+        }
+    }
+
+    if (m.type == soft) {
+        for (const auto& point : model.nodesPredictedPos) {
+            if (point.x > m.bb.minX && point.x < m.bb.maxX &&
+                point.y > m.bb.minY && point.y < m.bb.maxY &&
+                point.z > m.bb.minZ && point.z < m.bb.maxZ) {
+                model.nodesPredictedPos[center] = model.nodesPos[center];
+            }
         }
     }
 }
 
-void handleCollisionBM(Model &model, Model &m) {
-    if (model.type == 1) {
-        vector<glm::vec3> verts;
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(0.0f, model.distV, 0.0f));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] - glm::vec3(0.0f, model.distV, 0.0f));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(model.distH, 0.0f, 0.0f));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] - glm::vec3(model.distH, 0.0f, 0.0f));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(0.0f, 0.0f, model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] - glm::vec3(0.0f, 0.0f, model.distL));
 
-        for (auto& v : verts) {
-            resolveCubeCollision(model, v, m, true);
-        }
+void handleCollisionSM(Model &model, const Model &m) {
+    const glm::vec3 delta = m.nodesPos[m.nodesPos.size() - 1] - model.nodesPredictedPos[model.nodesPos.size() - 1];
+    const glm::vec3 dir = glm::normalize(delta);
+
+    glm::vec3 point = model.nodesPredictedPos[model.nodesPos.size() - 1] + dir * model.distH;
+
+    constexpr int soft = 0;
+    constexpr int axisAlignedBox = 1;
+    constexpr int sphere = 2;
+
+    const int center = model.nodesPos.size() - 1;
+
+    if (m.type == axisAlignedBox) {
+
+        resolveCubeCollision(model, point, m);
+
         return;
     }
 
-    if (model.type == 2) {
-        vector<glm::vec3> verts;
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(model.distH, model.distV, -model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(model.distH, model.distV, model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(model.distH, -model.distV, -model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(model.distH, -model.distV, model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(-model.distH, model.distV, -model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(-model.distH, model.distV, model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(-model.distH, -model.distV, -model.distL));
-        verts.push_back(model.nodesPos[model.nodesPos.size() - 1] + glm::vec3(-model.distH, -model.distV, model.distL));
+    if (model.type == sphere) {
+        glm::vec3 deltaPoint = point - m.nodesPos[m.nodesPos.size() - 1];
+        float radius = m.distH;
+        float len = glm::length(deltaPoint);
 
-        for (auto& v : verts) {
-            glm::vec3 delta = v - m.nodesPos[m.nodesPos.size() - 1];
-            float     r     = m.distH;                    // sphere “radius”
-            float     d     = glm::length(delta);
+        if (len < radius) {
+            const glm::vec3 normal = (len > 1e-6f) ? deltaPoint / len : glm::vec3(0.0f, 1.0f, 0.0f);
+            const float pen   = radius - len;
 
-            if (d < r) {
-                glm::vec3 n = (d > 1e-6f) ? delta / d : glm::vec3(0.0f, 1.0f, 0.0f);
-                float pen   = r - d;
-
-                model.nodesPos[model.nodesPos.size() - 1] += n * pen;
-                float vn = glm::dot(model.nodesVel[model.nodesPos.size() - 1], n);
-                if (vn < 0.0f) {
-                    glm::vec3 tangentVel = model.nodesVel[model.nodesPos.size() - 1] - vn * n;  // Remove normal component
-                    model.nodesVel[model.nodesPos.size() - 1] -= friction * tangentVel;  // Apply friction
-
-                    // Bounce (normal component)
-                    float bounciness = max(model.bounciness, m.bounciness);
-                    model.nodesVel[model.nodesPos.size() - 1] -= (1.0f + bounciness) * vn * n;
-                }
-            }
+            model.nodesPredictedPos[center] += normal * pen;;
+            model.collided.push_back(center);
+            model.collidedNor.push_back(normal);
         }
-        return;
+    }
+
+    if (m.type == soft) {
+        const glm::vec3 modelCenter = glm::vec3((m.bb.maxX + m.bb.minX) / 2, (m.bb.maxY + m.bb.minY) / 2, (m.bb.maxZ + m.bb.minZ) / 2);
+        point = model.nodesPredictedPos[model.nodesPos.size() - 1] + (modelCenter - model.nodesPredictedPos[model.nodesPos.size() - 1]) * model.distH;
+
+        if (point.x > m.bb.minX && point.x < m.bb.maxX &&
+            point.y > m.bb.minY && point.y < m.bb.maxY &&
+            point.z > m.bb.minZ && point.z < m.bb.maxZ) {
+            model.nodesPredictedPos[center] = model.nodesPos[center];
+        }
     }
 }
 
-void handleCollisionSM(Model &model, Model &m) {
-    glm::vec3 delta = model.nodesPos[model.nodesPos.size() - 1] - m.nodesPos[m.nodesPos.size() - 1];
-    glm::vec3 dir = glm::normalize(delta);
-
-    glm::vec3 v = model.nodesPos[model.nodesPos.size() - 1] + dir * model.distH;
-    // ===============  A. axis-aligned cube  ==================================
-    if (m.type == 1) {
-
-        float cx = m.nodesPos[m.nodesPos.size() - 1].x;
-        float cy = m.nodesPos[m.nodesPos.size() - 1].y;
-        float cz = m.nodesPos[m.nodesPos.size() - 1].z;
-        float H  = m.distH;           // half-width  (X)
-        float V  = m.distV;           // half-height (Y)
-        float L  = m.distL;           // half-length (Z)
-
-        // -------- Sphere vs Box Collision -------------------------------------
-        float sx = model.nodesPos[model.nodesPos.size() - 1].x;
-        float sy = model.nodesPos[model.nodesPos.size() - 1].y;
-        float sz = model.nodesPos[model.nodesPos.size() - 1].z;
-
-        float px = std::max(cx - H, std::min(sx, cx + H));
-        float py = std::max(cy - V, std::min(sy, cy + V));
-        float pz = std::max(cz - L, std::min(sz, cz + L));
-
-        glm::vec3 closestPoint(px, py, pz);
-        glm::vec3 delta = model.nodesPos[model.nodesPos.size() - 1] - closestPoint;
-        float     d     = glm::length(delta);
-
-        if (d < m.distH) {
-            glm::vec3 n = (d > 1e-6f) ? delta / d : glm::vec3(0.0f, 1.0f, 0.0f);
-            float pen   = m.distH - d;
-
-            model.nodesPos[model.nodesPos.size() - 1] += n * pen;
-            float vn = glm::dot(model.nodesVel[model.nodesPos.size() - 1], n);
-            if (vn < 0.0f) {
-                glm::vec3 tangentVel = model.nodesVel[model.nodesPos.size() - 1] - vn * n;  // Remove normal component
-                model.nodesVel[model.nodesPos.size() - 1] -= friction * tangentVel;  // Apply friction
-
-                // Bounce (normal component)
-                float bounciness = max(model.bounciness, m.bounciness);
-                model.nodesVel[model.nodesPos.size() - 1] -= (1.0f + bounciness) * vn * n;
-            }
-        }
-
-        return;
-    }
-
-    if (model.type == 2) {
-        glm::vec3 delta = v - m.nodesPos[m.nodesPos.size() - 1];
-        float     r     = m.distH;                    // sphere “radius”
-        float     d     = glm::length(delta);
-
-        if (d < r)                                       // penetration?
-        {
-            glm::vec3 n = (d > 1e-6f) ? delta / d : glm::vec3(0.0f, 1.0f, 0.0f);
-            float pen   = r - d + m.distH;
-
-            model.nodesPos[model.nodesPos.size() - 1] += n * pen;
-            float vn = glm::dot(model.nodesVel[model.nodesPos.size() - 1], n);
-            if (vn < 0.0f) {
-                glm::vec3 tangentVel = model.nodesVel[model.nodesPos.size() - 1] - vn * n;  // Remove normal component
-                model.nodesVel[model.nodesPos.size() - 1] -= friction * tangentVel;  // Apply friction
-
-                // Bounce (normal component)
-                float bounciness = max(model.bounciness, m.bounciness);
-                model.nodesVel[model.nodesPos.size() - 1] -= (1.0f + bounciness) * vn * n;
-            }
-        }
-        return;
-    }
-}
-
-float facesAngle(glm::vec3 Nl, glm::vec3 Nr, glm::vec3 Em, float *ArcCosSign = 0) {
+float facesAngle(const glm::vec3 Nl, const glm::vec3 Nr, const glm::vec3 Em, float *ArcCosSign = nullptr) {
     float result;
-    float cosAngle = glm::dot(Nl, Nr);
+    const float cosAngle = glm::dot(Nl, Nr);
+
     if (glm::dot(cross(Nl,Nr), Em) < 0.0f) {
-        result = 2.0*M_PI - acos(cosAngle);
+        result = M_PI * 2.0 - acos(cosAngle);
         *ArcCosSign = -1.0f;
     }
     else {
@@ -1035,7 +980,7 @@ float facesAngle(glm::vec3 Nl, glm::vec3 Nr, glm::vec3 Em, float *ArcCosSign = 0
 }
 
 
-void updateSoftNodes(float dt, Model& model) {
+void updateSoftNodes(const float dt, Model& model) {
     const float dt_sub = dt / model.subStep;
     const vector<unsigned int>& indices = model.faces;
 
@@ -1061,76 +1006,73 @@ void updateSoftNodes(float dt, Model& model) {
         }
 
         // === SPRING CONSTRAINTS ===
-        auto t0 = std::chrono::high_resolution_clock::now();
-        auto& springsMap = model.springsMap;  // convenience reference
-        int n = static_cast<int>(springsMap.size());
+        auto t0 = chrono::high_resolution_clock::now();
+
+        auto& springsMap = model.springsMap;
+        const int n = static_cast<int>(springsMap.size());
 
         #pragma omp parallel for
         for (int idx = 0; idx < n; idx++) {
-            auto it = std::next(springsMap.begin(), idx);
-            int nodeIdx = it->first;
+
+            const auto it = std::next(springsMap.begin(), idx);
             const auto& springIndices = it->second;
 
-            for (int i = 0; i < (int)springIndices.size(); i++) {
-                int j = springIndices[i];
-                Spring& s = model.springs[j];
+            for (unsigned int s : springIndices) {
+                Spring& spring = model.springs[s];
 
-                glm::vec3 delta = model.nodesPredictedPos[s.A] - model.nodesPredictedPos[s.B];
+                const glm::vec3 delta = model.nodesPredictedPos[spring.A] - model.nodesPredictedPos[spring.B];
 
-                float lenSq = glm::dot(delta, delta);
+                const float lenSq = glm::dot(delta, delta);
                 if (lenSq < 1e-12f) continue;
 
-                float len = sqrt(lenSq);
-                float C = len - s.restLength;
+                const float len = sqrt(lenSq);
+                const float C = len - spring.restLength;
 
-                float w1 = 1.0f / model.nodesMass[s.A];
-                float w2 = 1.0f / model.nodesMass[s.B];
-                float wSum = w1 + w2;
+                const float w1 = 1.0f / model.nodesMass[spring.A];
+                const float w2 = 1.0f / model.nodesMass[spring.B];
+                const float wSum = w1 + w2;
 
-                float alpha = s.compliance / (dt_sub * dt_sub);
-                float deltaLambda = (-C - alpha * s.lambda) / (wSum + alpha);
+                const float alpha = spring.compliance / (dt_sub * dt_sub);
+                const float deltaLambda = (-C - alpha * spring.lambda) / (wSum + alpha);
 
-                glm::vec3 dir = delta / len;  // normalize once
+                const glm::vec3 dir = delta / len;
 
-                // These updates to nodesPredictedPos and s.lambda are still data races if
-                // multiple threads write to the same node or spring!
-                model.nodesPredictedPos[s.A] += w1 * dir * deltaLambda;
-                model.nodesPredictedPos[s.B] -= w2 * dir * deltaLambda;
+                model.nodesPredictedPos[spring.A] += w1 * dir * deltaLambda;
+                model.nodesPredictedPos[spring.B] -= w2 * dir * deltaLambda;
 
-                s.lambda += deltaLambda;
+                spring.lambda += deltaLambda;
             }
         }
 
         auto t1 = std::chrono::high_resolution_clock::now();
 
-        springTime += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        springTime += chrono::duration<double, std::milli>(t1 - t0).count();
         springFrame++;
 
-        t0 = std::chrono::high_resolution_clock::now();
+        t0 = chrono::high_resolution_clock::now();
         if (!model.tetra) {
             // === VOLUME CONSTRAINT ===
-            float currentVolume = calculateVolume(model.nodesPredictedPos, model.faces);
-            float C = currentVolume - model.volume;
-
-            //printf("Current Volume: %f Rest Volume: %f\n", currentVolume, model.volume);
+            const float currentVolume = calculateVolume(model.nodesPredictedPos, model.faces);
+            const float C = currentVolume - model.volume;
 
             if (fabs(C) > 1e-6f) {
                 vector<glm::vec3> jJ(model.nodesPos.size(), glm::vec3(0.0f));
 
                 for (int i = 0; i < indices.size(); i += 3) {
-                    int I0 = indices[i];
-                    int I1 = indices[i + 1];
-                    int I2 = indices[i + 2];
+                    const unsigned int I0 = indices[i];
+                    const unsigned int I1 = indices[i + 1];
+                    const unsigned int I2 = indices[i + 2];
 
-                    glm::vec3 p0 = model.nodesPredictedPos[I0];
-                    glm::vec3 p1 = model.nodesPredictedPos[I1];
-                    glm::vec3 p2 = model.nodesPredictedPos[I2];
+                    const glm::vec3 p0 = model.nodesPredictedPos[I0];
+                    const glm::vec3 p1 = model.nodesPredictedPos[I1];
+                    const glm::vec3 p2 = model.nodesPredictedPos[I2];
 
                     jJ[I0] += glm::cross(p1, p2) / 6.0f;
                     jJ[I1] += glm::cross(p2, p0) / 6.0f;
                     jJ[I2] += glm::cross(p0, p1) / 6.0f;
                 }
-                float weirdAlpha = model.volumeCompliance / (dt_sub * dt_sub);
+
+                const float weirdAlpha = model.volumeCompliance / (dt_sub * dt_sub);
                 float denum = weirdAlpha;
 
                 for (int i = 0; i < model.nodesPos.size(); i++) {
@@ -1138,7 +1080,7 @@ void updateSoftNodes(float dt, Model& model) {
                 }
 
                 if (fabs(denum) > 1e-6f) {
-                    float deltaLambda = (-C - weirdAlpha*(model.lambda)) / denum;
+                    const float deltaLambda = (-C - weirdAlpha*(model.lambda)) / denum;
 
                     for (int i = 0; i < model.nodesPos.size(); i++) {
                         model.nodesPredictedPos[i] += ((1.0f/model.nodesMass[i])*deltaLambda) * jJ[i];
@@ -1149,60 +1091,60 @@ void updateSoftNodes(float dt, Model& model) {
             }
 
             // === BENDING ===
-            for (AngledSpring& s : model.angledSprings) {
-                int N0 = s.edge.x;
-                int N1 = s.edge.y;
-                int N2 = s.A;
-                int N3 = s.B;
+            for (AngledSpring& angledSpring : model.angledSprings) {
+                const unsigned int N0 = angledSpring.edge.x;
+                const unsigned int N1 = angledSpring.edge.y;
+                const unsigned int N2 = angledSpring.A;
+                const unsigned  N3 = angledSpring.B;
 
-                glm::vec3 P0 = model.nodesPredictedPos[N0];
-                glm::vec3 P1 = model.nodesPredictedPos[N1];
-                glm::vec3 P2 = model.nodesPredictedPos[N2];
-                glm::vec3 P3 = model.nodesPredictedPos[N3];
+                const glm::vec3 P0 = model.nodesPredictedPos[N0];
+                const glm::vec3 P1 = model.nodesPredictedPos[N1];
+                const glm::vec3 P2 = model.nodesPredictedPos[N2];
+                const glm::vec3 P3 = model.nodesPredictedPos[N3];
 
-                glm::vec3 Em = P1 - P0;
-                glm::vec3 El = P2 - P0;
-                glm::vec3 Er = P3 - P0;
+                const glm::vec3 Em = P1 - P0;
+                const glm::vec3 El = P2 - P0;
+                const glm::vec3 Er = P3 - P0;
 
-                glm::vec3 Nl = glm::cross(El, Em);
-                glm::vec3 Nr = glm::cross(Er, Em);
+                const glm::vec3 Nl = glm::cross(El, Em);
+                const glm::vec3 Nr = glm::cross(Er, Em);
 
-                float Ll = glm::length(Nl);
-                float Lr = glm::length(Nr);
+                const float Ll = glm::length(Nl);
+                const float Lr = glm::length(Nr);
 
                 if (fabs(Ll) > 1e-6f && fabs(Lr) > 1e-6f) {
-                    float cosAngle = calculateAngle(Nl, Nr);
+                    const float cosAngle = calculateAngle(Nl, Nr);
                     float ArcCosSign = 1.0f;
-                    float currentAngle = facesAngle(Nl, Nr, Em, &ArcCosSign);
-                    float deltaAngle = currentAngle - s.restAngle;
+                    const float currentAngle = facesAngle(Nl, Nr, Em, &ArcCosSign);
+                    const float deltaAngle = currentAngle - angledSpring.restAngle;
 
                     if (fabs(deltaAngle) > 1e-6f) {
-                        glm::vec3 JP1 = ((glm::cross(Er, Nl) + cosAngle*glm::cross(Nr, Er)))/Lr + (glm::cross(El, Nr) + cosAngle*glm::cross(Nl, El));
-                        glm::vec3 JP2 = (glm::cross(Nr, Em) - cosAngle*glm::cross(Nl, Em))/Ll;
-                        glm::vec3 JP3 = (glm::cross(Nl, Em) - cosAngle*glm::cross(Nr, Em))/Lr;
-                        glm::vec3 JP0 = -JP1 - JP2 - JP3;
+                        const glm::vec3 JP1 = ((glm::cross(Er, Nl) + cosAngle*glm::cross(Nr, Er)))/Lr + (glm::cross(El, Nr) + cosAngle*glm::cross(Nl, El));
+                        const glm::vec3 JP2 = (glm::cross(Nr, Em) - cosAngle*glm::cross(Nl, Em))/Ll;
+                       const  glm::vec3 JP3 = (glm::cross(Nl, Em) - cosAngle*glm::cross(Nr, Em))/Lr;
+                        const glm::vec3 JP0 = -JP1 - JP2 - JP3;
 
-                        float RadicanDenomF = 1.0f - cosAngle*cosAngle;
-                        float DenomF = -ArcCosSign*sqrt(RadicanDenomF);
+                        const float RadicanDenomF = 1.0f - cosAngle*cosAngle;
+                        const float DenomF = -ArcCosSign*sqrt(RadicanDenomF);
 
 
-                        float W0 = 1.0f / model.nodesMass[N0];
-                        float W1 = 1.0f / model.nodesMass[N1];
-                        float W2 = 1.0f / model.nodesMass[N2];
-                        float W3 = 1.0f / model.nodesMass[N3];
+                        const float W0 = 1.0f / model.nodesMass[N0];
+                        const float W1 = 1.0f / model.nodesMass[N1];
+                        const float W2 = 1.0f / model.nodesMass[N2];
+                        const float W3 = 1.0f / model.nodesMass[N3];
 
-                        float weirdAlpha = s.compliance / (dt_sub * dt_sub);
+                        const float weirdAlpha = angledSpring.compliance / (dt_sub * dt_sub);
 
-                        float Denom = W0 * glm::dot(JP0, JP0) + W1 * glm::dot(JP1, JP1) + W2 * glm::dot(JP2, JP2) + W3 * glm::dot(JP3, JP3) + weirdAlpha*RadicanDenomF;
+                        const float Denom = W0 * glm::dot(JP0, JP0) + W1 * glm::dot(JP1, JP1) + W2 * glm::dot(JP2, JP2) + W3 * glm::dot(JP3, JP3) + weirdAlpha*RadicanDenomF;
 
                         if (fabs(Denom) > 1e-6f) {
-                            float deltaLambda = (-deltaAngle - weirdAlpha*(s.lambda))/Denom;
+                            const float deltaLambda = (-deltaAngle - weirdAlpha*(angledSpring.lambda))/Denom;
                             model.nodesPredictedPos[N0] += (W0*(DenomF*DenomF)*deltaLambda)*JP0;
                             model.nodesPredictedPos[N1] += (W1*(DenomF*DenomF)*deltaLambda)*JP1;
                             model.nodesPredictedPos[N2] += (W2*(DenomF*DenomF)*deltaLambda)*JP2;
                             model.nodesPredictedPos[N3] += (W3*(DenomF*DenomF)*deltaLambda)*JP3;
 
-                            s.lambda += deltaLambda*RadicanDenomF;
+                            angledSpring.lambda += deltaLambda*RadicanDenomF;
                         }
                     }
                 }
@@ -1212,28 +1154,28 @@ void updateSoftNodes(float dt, Model& model) {
             // === VOLUME CONSTRAINT ===
             #pragma omp parallel for
             for (int i = 0; i < model.tetras.size(); i++) {
-                Tetra& t = model.tetras[i];
-                float currentVolume = calculateTetraVolume(t, model.nodesPredictedPos);
-                float C = currentVolume - t.volume;
+                Tetra& tetra = model.tetras[i];
+                const float currentVolume = calculateTetraVolume(tetra, model.nodesPredictedPos);
+                const float C = currentVolume - tetra.volume;
 
                 if (fabs(C) > 1e-6f) {
                     // Get indices of the tetrahedron's vertices
-                    int I0 = t.out[0];
-                    int I1 = t.out[1];
-                    int I2 = t.out[2];
-                    int I3 = t.in;
+                    const unsigned int I0 = tetra.out[0];
+                    const unsigned int I1 = tetra.out[1];
+                    const unsigned int I2 = tetra.out[2];
+                    const unsigned int I3 = tetra.in;
 
-                    glm::vec3 p0 = model.nodesPredictedPos[I0];
-                    glm::vec3 p1 = model.nodesPredictedPos[I1];
-                    glm::vec3 p2 = model.nodesPredictedPos[I2];
-                    glm::vec3 p3 = model.nodesPredictedPos[I3];
+                    const glm::vec3 p0 = model.nodesPredictedPos[I0];
+                    const glm::vec3 p1 = model.nodesPredictedPos[I1];
+                    const glm::vec3 p2 = model.nodesPredictedPos[I2];
+                    const glm::vec3 p3 = model.nodesPredictedPos[I3];
 
-                    glm::vec3 j0 = glm::cross(p1 - p2, p3 - p2) / 6.0f;
-                    glm::vec3 j1 = glm::cross(p2 - p0, p3 - p0) / 6.0f;
-                    glm::vec3 j2 = glm::cross(p0 - p1, p3 - p1) / 6.0f;
-                    glm::vec3 j3 = glm::cross(p1 - p0, p2 - p0) / 6.0f;
+                    const glm::vec3 j0 = glm::cross(p1 - p2, p3 - p2) / 6.0f;
+                    const glm::vec3 j1 = glm::cross(p2 - p0, p3 - p0) / 6.0f;
+                    const glm::vec3 j2 = glm::cross(p0 - p1, p3 - p1) / 6.0f;
+                    const glm::vec3 j3 = glm::cross(p1 - p0, p2 - p0) / 6.0f;
 
-                    float weirdAlpha = model.volumeCompliance / (dt_sub * dt_sub);
+                    const float weirdAlpha = model.volumeCompliance / (dt_sub * dt_sub);
                     float denum = weirdAlpha;
 
                     // Compute denominator
@@ -1243,23 +1185,23 @@ void updateSoftNodes(float dt, Model& model) {
                     denum += (1.0f / model.nodesMass[I3]) * glm::dot(j3, j3);
 
                     if (fabs(denum) > 1e-6f) {
-                        float deltaLambda = (-C - weirdAlpha * model.lambda) / denum;
+                        const float deltaLambda = (-C - weirdAlpha * model.lambda) / denum;
 
                         model.nodesPredictedPos[I0] += (1.0f / model.nodesMass[I0]) * deltaLambda * j0;
                         model.nodesPredictedPos[I1] += (1.0f / model.nodesMass[I1]) * deltaLambda * j1;
                         model.nodesPredictedPos[I2] += (1.0f / model.nodesMass[I2]) * deltaLambda * j2;
                         model.nodesPredictedPos[I3] += (1.0f / model.nodesMass[I3]) * deltaLambda * j3;
 
-                        t.lambda += deltaLambda;
+                        tetra.lambda += deltaLambda;
                     }
                 }
             }
         }
-        t1 = std::chrono::high_resolution_clock::now();
-        volumeTime += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        t1 = chrono::high_resolution_clock::now();
+        volumeTime += chrono::duration<double, std::milli>(t1 - t0).count();
         volumeFrame++;
 
-        t0 = std::chrono::high_resolution_clock::now();
+        t0 = chrono::high_resolution_clock::now();
         // === COLLISION ===
         for (size_t i = 0; i < model.nodesPos.size(); ++i) {
             model.nodesVel[i] = (model.nodesPredictedPos[i] - model.nodesPos[i]) / dt_sub;
@@ -1268,38 +1210,55 @@ void updateSoftNodes(float dt, Model& model) {
         handleCollision(model);
 
         for (size_t i = 0; i < model.collided.size(); ++i) {
-            model.nodesVel[model.collided[i]] = model.nodesVel[model.collided[i]] * (model.collidedNor[i] * friction + (glm::vec3 (1.0f) - model.collidedNor[i]));
-            if (model.bounciness != 0.0f) {
-                model.nodesVel[model.collided[i]] = glm::cross(model.collidedNor[i], model.nodesVel[model.collided[i]]) * model.bounciness;
-            }
-            else {
-                model.nodesVel[model.collided[i]] *= 0.0f;
-            }
+            const unsigned int idx = model.collided[i];
+            const glm::vec3 velocity = model.nodesVel[idx];
+            const glm::vec3 normal = model.collidedNor[i];
+
+            // Decompose velocity into normal and tangential components
+            const float velocity_normal_magnitude = glm::dot(velocity, normal);
+            const glm::vec3 velocity_normal = velocity_normal_magnitude * normal;
+            const glm::vec3 velocity_tangent = velocity - velocity_normal;
+
+            // Reflect and dampen the normal component
+            const glm::vec3 reflected = -model.bounciness * velocity_normal;
+
+            // Apply friction to the tangential component
+            const glm::vec3 frictioned = velocity_tangent * friction;
+
+            // Combine
+            model.nodesVel[idx] = reflected + frictioned;
         }
 
         for (size_t i = 0; i < model.nodesPos.size(); ++i) {
             model.nodesPos[i] = model.nodesPredictedPos[i];
             model.nodesVel[i] *= 0.9999f;
         }
-        t1 = std::chrono::high_resolution_clock::now();
-        collisionTime += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        t1 = chrono::high_resolution_clock::now();
+        collisionTime += chrono::duration<double, std::milli>(t1 - t0).count();
         collisionFrame++;
 
     }
-    auto t0 = std::chrono::high_resolution_clock::now();
+
+    auto t0 = chrono::high_resolution_clock::now();
+
     computeVertexNormals(model.nodesNor, model.nodesPos, model.faces);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    normalTime += std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    auto t1 = chrono::high_resolution_clock::now();
+    normalTime += chrono::duration<double, std::milli>(t1 - t0).count();
     normalFrame++;
+
     updateGPUpositionsAndNormals(model);
 
     createBB(model);
 }
 
 
-void updateRigidNodes(float dt, Model& model) {
+void updateRigidNodes(const float dt, Model& model) {
     model.nodesVel[model.nodesPos.size() - 1] += dt * gravity;
-    model.nodesPredictedPos[model.nodesPos.size() - 1] += model.nodesPos[model.nodesPos.size() - 1] * model.nodesVel[model.nodesPos.size() - 1];
+
+    for (size_t i = 0; i < model.nodesPos.size(); ++i) {
+        model.nodesPredictedPos[i] = model.nodesPos[i] + model.nodesVel[model.nodesPos.size() - 1] * dt;
+    }
 
     for (Model& m : models) {
         if (&m != &model) {
@@ -1314,19 +1273,45 @@ void updateRigidNodes(float dt, Model& model) {
         }
     }
 
-    if (model.nodesPredictedPos[model.nodesPos.size() - 1] != model.nodesPos[model.nodesPos.size() - 1]) {
-        glm::vec3 deltaPos = model.nodesPredictedPos[model.nodesPos.size() - 1] - model.nodesPos[model.nodesPos.size() - 1];
-        for (glm::vec3& n : model.nodesPos) {
-            n += deltaPos;
-        }
-        model.nodesVel[model.nodesPos.size() - 1] = (model.nodesPredictedPos[model.nodesPos.size() - 1] - model.nodesPos[model.nodesPos.size() - 1]) / dt;
+    const glm::vec3 deltaPos = (model.nodesPredictedPos[model.nodesPos.size() - 1] - model.nodesPos[model.nodesPos.size() - 1]);
 
-        updateGPUpositionsAndNormals(model);
+    if (model.collided.empty()) {
+        model.nodesVel[model.nodesPos.size() - 1] = deltaPos / dt;
     }
+    else {
+        for (size_t i = 0; i < model.collided.size(); ++i) {
+            const unsigned int idx = model.collided[i];
+            const glm::vec3 velocity = model.nodesVel[idx];
+            const glm::vec3 normal = model.collidedNor[i];
+
+            // Decompose velocity into normal and tangential components
+            const float velocity_normal_magnitude = glm::dot(velocity, normal);
+            const glm::vec3 velocity_normal = velocity_normal_magnitude * normal;
+            const glm::vec3 velocity_tangent = velocity - velocity_normal;
+
+            // Reflect and dampen the normal component
+            const glm::vec3 reflected = -model.bounciness * velocity_normal;
+
+            // Apply friction to the tangential component
+            const glm::vec3 frictioned = velocity_tangent * friction;
+
+            // Combine
+            model.nodesVel[idx] = reflected + frictioned;
+        }
+    }
+
+    for (auto & nodesPo : model.nodesPos) {
+        nodesPo += deltaPos;
+    }
+
     createBB(model);
+
+    updateGPUpositionsAndNormals(model);
 }
 
-void updateNodes(float dt, Model& model) {
+void updateNodes(const float dt, Model& model) {
+    model.collided.clear();
+    model.collidedNor.clear();
     if (model.type == 0) {
         updateSoftNodes(dt, model);
     }
@@ -1336,7 +1321,6 @@ void updateNodes(float dt, Model& model) {
 }
 
 void drawBB(const BB& bb) {
-    glColor3f(1.0f, 0.0f, 0.0f); // Red color
     glBegin(GL_LINES);
 
     // Bottom face
@@ -1393,7 +1377,7 @@ void drawModel(const Model &model)
 
 
     glBindVertexArray(g.vao);
-    glDrawElements(GL_TRIANGLES, g.indexCount, GL_UNSIGNED_INT, 0);
+    glDrawElements(GL_TRIANGLES, g.indexCount, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -1405,9 +1389,11 @@ void drawModel(const Model &model)
 
 
 
-void changeSize(int w, int h) {
+void changeSize(const int w, int h) {
     if (h == 0) h = 1;
-    float ratio = (float)w / h;
+
+    const float ratio = static_cast<float>(w) / h;
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glViewport(0, 0, w, h);
@@ -1415,9 +1401,7 @@ void changeSize(int w, int h) {
     glMatrixMode(GL_MODELVIEW);
 }
 
-void renderScene(void) {
-    float fps;
-    int time;
+void renderScene() {
     char s[64];
 
     currentTime = glutGet(GLUT_ELAPSED_TIME);
@@ -1427,16 +1411,11 @@ void renderScene(void) {
 
     dt /= 1000.0f;
 
-    const float MAX_DT = 1.0f / 30.0f; // Max of 33ms (like 30fps)
+    constexpr float MAX_DT = 1.0f / 30.0f; // Max of 33ms (like 30fps)
     dt = std::min(dt, MAX_DT);
-    //dt = 1.0f / 480.0f;
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    //glLoadIdentity();
-    //gluLookAt(CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ, 0, 0, 0, 0.0f, 1.0f, 0.0f);
     glUseProgram(shaderProgram);
-
-
 
     if (!paused && dt > 0.00001f) {
         for (int i = 0; i < updateModels.size(); ++i) {
@@ -1444,8 +1423,7 @@ void renderScene(void) {
         }
     }
 
-    glm::mat4 model = glm::mat4(1.0f);
-    //glm::mat4 view = glm::lookAt(glm::vec3(0,0,0), glm::vec3(0, 1, 0), glm::vec3(0, 1, 0));
+    auto model = glm::mat4(1.0f);
     glm::mat4 view = glm::lookAt(glm::vec3(CameraX + k * DX, CameraY + k * DY, CameraZ + k * DZ), glm::vec3(0), glm::vec3(0, 1, 0));
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), 1.0f, 0.1f, 100.0f);
 
@@ -1464,12 +1442,13 @@ void renderScene(void) {
     }
 
     frame++;
-    time=glutGet(GLUT_ELAPSED_TIME);
+    const int time = glutGet(GLUT_ELAPSED_TIME);
     if (time - timebase > 1000) {
-        fps = frame*1000.0/(time-timebase);
+        const double fps = frame * 1000.0 / (time - timebase);
         timebase = time;
         frame = 0;
-        sprintf(s, "FPS: %f6.2", fps);
+
+        sprintf_s(s, "FPS: %f6.2", fps);
         glutSetWindowTitle(s);
 
         std::cout << "Spring step took: "
@@ -1501,11 +1480,10 @@ void renderScene(void) {
         normalTime = 0;
     }
 
-    //printf("Sphere top node pos %f %f %f \n", models[0].nodes[0].pos.x, models[0].nodes[0].pos.y, models[0].nodes[0].pos.z);
     glutSwapBuffers();
 }
 
-void keyManage(unsigned char key, int x, int y) {
+void keyManage(const unsigned char key, int x, int y) {
     switch (key) {
         case 'd': case 'D':
             alpha += M_PI / speed;
@@ -1565,39 +1543,40 @@ void keyManage(unsigned char key, int x, int y) {
             break;
         case 'p': case 'P':
             paused = !paused;
-            if (paused) {
-                pauseB = glutGet(GLUT_ELAPSED_TIME);
-            }
-            else {
+            if (!paused) {
                 previousTime = glutGet(GLUT_ELAPSED_TIME);
                 currentTime = glutGet(GLUT_ELAPSED_TIME);
             }
             break;
+        default:
+            break;
     }
 
-    glutPostRedisplay(); // Request scene update
+    glutPostRedisplay();
 }
 
-GLuint compileShader(const char* path, GLenum type) {
-    std::ifstream file(path);
+GLuint compileShader(const char* path, const GLenum type) {
+    const ifstream file(path);
     if (!file.is_open()) {
-        std::cerr << "Failed to open shader file: " << path << std::endl;
+        cerr << "Failed to open shader file: " << path << endl;
         return 0;
     }
-    std::stringstream buffer;
+
+    stringstream buffer;
     buffer << file.rdbuf();
-    std::string src = buffer.str();
+
+    const string src = buffer.str();
     const char* csrc = src.c_str();
 
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &csrc, NULL);
+    const GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &csrc, nullptr);
     glCompileShader(shader);
 
     GLint success;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         char infoLog[512];
-        glGetShaderInfoLog(shader, 512, NULL, infoLog);
+        glGetShaderInfoLog(shader, 512, nullptr, infoLog);
         std::cerr << "Shader compilation failed for " << path << ":\n" << infoLog << std::endl;
         return 0;
     }
@@ -1606,10 +1585,10 @@ GLuint compileShader(const char* path, GLenum type) {
 
 
 GLuint createShaderProgram(const char* vertPath, const char* fragPath) {
-    GLuint vert = compileShader(vertPath, GL_VERTEX_SHADER);
+    const GLuint vert = compileShader(vertPath, GL_VERTEX_SHADER);
     if (vert == 0) return 0;
 
-    GLuint frag = compileShader(fragPath, GL_FRAGMENT_SHADER);
+    const GLuint frag = compileShader(fragPath, GL_FRAGMENT_SHADER);
     if (frag == 0) {
         glDeleteShader(vert);
         return 0;
@@ -1624,7 +1603,7 @@ GLuint createShaderProgram(const char* vertPath, const char* fragPath) {
     glGetProgramiv(prog, GL_LINK_STATUS, &success);
     if (!success) {
         char infoLog[512];
-        glGetProgramInfoLog(prog, 512, NULL, infoLog);
+        glGetProgramInfoLog(prog, 512, nullptr, infoLog);
         std::cerr << "Shader program linking failed:\n" << infoLog << std::endl;
         glDeleteShader(vert);
         glDeleteShader(frag);
@@ -1673,8 +1652,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
-// TIP See CLion help at <a
-// href="https://www.jetbrains.com/help/clion/">jetbrains.com/help/clion/</a>.
-//  Also, you can try interactive lessons for CLion by selecting
-//  'Help | Learn IDE Features' from the main menu.

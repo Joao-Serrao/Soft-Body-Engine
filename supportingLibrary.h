@@ -3,28 +3,14 @@
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
-#include <glm/gtc/constants.hpp>
-#include <glm/gtx/norm.hpp>
 #include <glm/gtx/hash.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include <cstdio>
-#include <cmath>
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <sstream>
-#include <string>
-#include <random>
-#include <unordered_set>
-#include <unordered_map>
-#include <algorithm>
-#include <memory>
 #include <set>
-
-#include <GL/glew.h>
-#include <GL/glut.h>
 
 #include "structs.h"
 

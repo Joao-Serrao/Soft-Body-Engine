@@ -14,8 +14,8 @@ constexpr glm::vec3 ORIGIN = glm::vec3 (0.0f);
 constexpr float EPSILON = 1e-6f;
 
 
-
-void calculateTetras(Model &model, float compliance, float centerCompliance, float mass, int surfaceType) {
+// Creates the Tetrahedrons that compose the inside of a Model using Tetgen
+void calculateTetras(Model &model, const float compliance, const float centerCompliance, const float mass, const int surfaceType) {
         vector<Tetra> tetras;
         tetgenio in, out;
         in.numberofpoints = model.nodesPos.size();
@@ -69,21 +69,21 @@ void calculateTetras(Model &model, float compliance, float centerCompliance, flo
         vector<Spring> springs;
 
         for (int i = 0; i < out.numberoftetrahedra; ++i) {
-            int a = out.tetrahedronlist[i * 4 + 0];
-            int b = out.tetrahedronlist[i * 4 + 1];
-            int c = out.tetrahedronlist[i * 4 + 2];
-            int d = out.tetrahedronlist[i * 4 + 3];
+            const int a = out.tetrahedronlist[i * 4 + 0];
+            const int b = out.tetrahedronlist[i * 4 + 1];
+            const int c = out.tetrahedronlist[i * 4 + 2];
+            const int d = out.tetrahedronlist[i * 4 + 3];
 
             vector<int> points {a,b,c,d};
 
-            Tetra t;
+            Tetra tetra;
             vector<unsigned int> outT;
 
             if (surfaceType == 2) {
-                for (auto& p : points) {
-                    float dist = glm::length(model.nodesPos[p]);
+                for (int& p : points) {
+                    const float dist = glm::length(model.nodesPos[p]);
                     if ( model.distH - dist > 0.001f) {
-                        t.in = p;
+                        tetra.in = p;
                     }
                     else {
                         outT.push_back(p);
@@ -91,48 +91,47 @@ void calculateTetras(Model &model, float compliance, float centerCompliance, flo
                 }
             }
             if (surfaceType == 1) {
-                for (auto& p : points) {
+                for (int& p : points) {
                     const glm::vec3& pos = model.nodesPos[p];
 
-                    bool insideX = (pos.x > -model.distH + EPSILON) && (pos.x < model.distH - EPSILON);
-                    bool insideY = (pos.y > -model.distV + EPSILON) && (pos.y < model.distV - EPSILON);
-                    bool insideZ = (pos.z > -model.distL + EPSILON) && (pos.z < model.distL - EPSILON);
+                    const bool insideX = (pos.x > -model.distH + EPSILON) && (pos.x < model.distH - EPSILON);
+                    const bool insideY = (pos.y > -model.distV + EPSILON) && (pos.y < model.distV - EPSILON);
+                    const bool insideZ = (pos.z > -model.distL + EPSILON) && (pos.z < model.distL - EPSILON);
 
                     if (insideX && insideY && insideZ) {
-                        t.in = p;
+                        tetra.in = p;
                     } else {
                         outT.push_back(p);
                     }
                 }
             }
 
-            bool surface = true;
+            tetra.surface = true;
             if (outT.size() < 3 || outT.size() == 4) {
-                t.in = a;
+                tetra.in = a;
                 outT.clear();
                 outT.push_back(b);
                 outT.push_back(c);
                 outT.push_back(d);
-                surface = false;
+                tetra.surface = false;
             }
-            t.out = outT;
-            t.volume = calculateTetraVolume(t, model.nodesPos);
-            t.surface = surface;
+            tetra.out = outT;
+            tetra.volume = calculateTetraVolume(tetra, model.nodesPos);
 
 
-            auto addSpring = [&](int i, int j) {
-                Spring s;
-                s.A = i;
-                s.B = j;
-                s.restLength = glm::length(model.nodesPos[i] - model.nodesPos[j]);
-                if (glm::length(model.nodesPos[i]) < model.distH || glm::length(model.nodesPos[j]) < model.distH) {
-                    s.compliance = centerCompliance;
-                    s.in = true;
+            auto addSpring = [&](int node1, int node2) {
+                Spring spring;
+                spring.A = node1;
+                spring.B = node2;
+                spring.restLength = glm::length(model.nodesPos[node1] - model.nodesPos[node2]);
+                if (glm::length(model.nodesPos[node1]) < model.distH || glm::length(model.nodesPos[node2]) < model.distH) {
+                    spring.compliance = centerCompliance;
+                    spring.in = true;
                 }
                 else {
-                    s.compliance = compliance;
+                    spring.compliance = compliance;
                 }
-                springs.push_back(s);
+                springs.push_back(spring);
             };
 
             addSpring(a, b);
@@ -142,7 +141,7 @@ void calculateTetras(Model &model, float compliance, float centerCompliance, flo
             addSpring(b, d);
             addSpring(c, d);
 
-            tetras.push_back(t);
+            tetras.push_back(tetra);
         }
         model.tetras = tetras;
         model.springs = springs;
@@ -150,42 +149,44 @@ void calculateTetras(Model &model, float compliance, float centerCompliance, flo
         delete[] in.trifacelist;
 }
 
-void calculateSprings(Model &model, float compliance) {
+// Creates the Springs that connect each Node in a Model
+void calculateSprings(Model &model, const float compliance) {
     vector<Spring> springs;
 
     for (int i = 0; i < model.faces.size(); i += 3) {
-        int A = model.faces[i];
-        int B = model.faces[i + 1];
-        int C = model.faces[i + 2];
+        const int node1 = model.faces[i];
+        const int node2 = model.faces[i + 1];
+        const int node3 = model.faces[i + 2];
 
-        Spring s1;
-        Spring s2;
-        Spring s3;
+        Spring spring1;
+        Spring spring2;
+        Spring spring3;
 
-        s1.A = A;
-        s1.B = B;
-        s1.restLength = glm::length(model.nodesPos[A] - model.nodesPos[B]);
-        s1.compliance = compliance;
+        spring1.A = node1;
+        spring1.B = node2;
+        spring1.restLength = glm::length(model.nodesPos[node1] - model.nodesPos[node2]);
+        spring1.compliance = compliance;
 
-        s2.A = B;
-        s2.B = C;
-        s2.restLength = glm::length(model.nodesPos[B] - model.nodesPos[C]);
-        s2.compliance = compliance;
+        spring2.A = node2;
+        spring2.B = node3;
+        spring2.restLength = glm::length(model.nodesPos[node2] - model.nodesPos[node3]);
+        spring2.compliance = compliance;
 
-        s3.A = C;
-        s3.B = A;
-        s3.restLength = glm::length(model.nodesPos[C] - model.nodesPos[A]);
-        s3.compliance = compliance;
+        spring3.A = node3;
+        spring3.B = node1;
+        spring3.restLength = glm::length(model.nodesPos[node3] - model.nodesPos[node1]);
+        spring3.compliance = compliance;
 
-        springs.push_back(s1);
-        springs.push_back(s2);
-        springs.push_back(s3);
+        springs.push_back(spring1);
+        springs.push_back(spring2);
+        springs.push_back(spring3);
     }
 
     model.springs = springs;
 }
 
-void calculateAngledSprings(Model &model, float angleStiffness) {
+// Creates the Angle Constraint between Triangles with a shared edge
+void calculateAngledSprings(Model &model, const float angleStiffness) {
     vector<AngledSpring> angledSprings;
 
         for (int i = 0; i < model.faces.size() - 3; i += 3) {
@@ -201,15 +202,15 @@ void calculateAngledSprings(Model &model, float angleStiffness) {
                 vector<glm::vec2> edgesA;
                 vector<glm::vec2> edgesB;
 
-                edgesA.push_back(glm::vec2(A,B));
-                edgesA.push_back(glm::vec2(B,C));
-                edgesA.push_back(glm::vec2(C,A));
+                edgesA.emplace_back(A,B);
+                edgesA.emplace_back(B,C);
+                edgesA.emplace_back(C,A);
 
-                edgesB.push_back(glm::vec2(D,E));
-                edgesB.push_back(glm::vec2(E,F));
-                edgesB.push_back(glm::vec2(F,D));
+                edgesB.emplace_back(D,E);
+                edgesB.emplace_back(E,F);
+                edgesB.emplace_back(F,D);
 
-                glm::vec2 edge = getEdge(edgesA, edgesB);
+                const glm::vec2 edge = getEdge(edgesA, edgesB);
 
                 if (edge != glm::vec2(0,0)) {
                     set<int> triangleA = {A, B, C};
@@ -221,7 +222,7 @@ void calculateAngledSprings(Model &model, float angleStiffness) {
                             uniqueA = point;
                             break;
                         }
-                        else if (edge.y == point) {
+                        if (edge.y == point) {
                             uniqueA = point;
                             break;
                         }
@@ -231,34 +232,39 @@ void calculateAngledSprings(Model &model, float angleStiffness) {
                             uniqueB = point;
                             break;
                         }
-                        else if (edge.y == point) {
+                        if (edge.y == point) {
                             uniqueB = point;
                             break;
                         }
                     }
 
-                    AngledSpring s;
-                    s.A = uniqueA;
-                    s.B = uniqueB;
-                    s.edge = edge;
-                    s.compliance = angleStiffness;
-                    glm::vec3 v1 = glm::cross((model.nodesPos[uniqueA] - model.nodesPos[edge.x]), (model.nodesPos[edge.y] - model.nodesPos[edge.x]));
-                    glm::vec3 v2 = glm::cross((model.nodesPos[uniqueB] -model. nodesPos[edge.x]), (model.nodesPos[edge.y] - model.nodesPos[edge.x]));
-                    s.restAngle = acos(calculateAngle(v1, v2));
-                    angledSprings.push_back(s);
+                    AngledSpring angledSpring;
+                    angledSpring.A = uniqueA;
+                    angledSpring.B = uniqueB;
+                    angledSpring.edge = edge;
+                    angledSpring.compliance = angleStiffness;
+
+                    const glm::vec3 v1 = glm::cross((model.nodesPos[uniqueA] - model.nodesPos[edge.x]), (model.nodesPos[edge.y] - model.nodesPos[edge.x]));
+                    const glm::vec3 v2 = glm::cross((model.nodesPos[uniqueB] -model. nodesPos[edge.x]), (model.nodesPos[edge.y] - model.nodesPos[edge.x]));
+
+                    angledSpring.restAngle = acos(calculateAngle(v1, v2));
+                    if (isnan(angledSpring.restAngle)) {
+                        angledSpring.restAngle = 0.0f;
+                    }
+                    angledSprings.push_back(angledSpring);
                 }
             }
         }
         model.angledSprings = angledSprings;
 }
 
+// Creates an Unordered Map for Springs
 void calculateSpringMap(Model &model) {
-    unordered_map<int, vector<int>> springsMap;
-    int i = 0;
+    unordered_map<unsigned int, vector<unsigned int>> springsMap;
+    unsigned int i = 0;
 
     for (const Spring& s : model.springs) {
         springsMap[s.A].push_back(i);
-
         i++;
     }
 
@@ -269,12 +275,12 @@ void calculateSpringMap(Model &model) {
 
 
 // Makes a Soft Object with the shape of a IcoSphere
-Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
-                    float compliance = 0.0f, float centerCompliance = 0.0f, float angleStiffness = 0.0f,
-                    glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), bool tetra = false, bool soft = false) {
+Model makeIcoSphere(const float radius, const int detail, const float subStep = 1.0f, const float mass = 1.0f, const float bounciness = 0.0f, const float volumeCompliance = 0.0f,
+                    const float compliance = 0.0f, const float centerCompliance = 0.0f, const float angleStiffness = 0.0f,
+                    const glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), const bool tetra = false, const bool soft = false) {
     vector<float> nodesMass;
     vector<glm::vec3> nodesPos;
-    std::unordered_map<glm::vec3, int, Vec3Hash, Vec3Equal> vertexMap;
+    unordered_map<glm::vec3, int, Vec3Hash, Vec3Equal> vertexMap;
     vector<int> faces;
 
     Model model;
@@ -283,8 +289,8 @@ Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass =
     model.color = color;
     model.bounciness = bounciness;
 
-    float a = sqrt(radius / (1 + GOLDEN_RATIO * GOLDEN_RATIO));
-    float c = a * GOLDEN_RATIO;
+    const float a = sqrt(radius / (1 + GOLDEN_RATIO * GOLDEN_RATIO));
+    const float c = a * GOLDEN_RATIO;
     glm::vec3 pos;
 
     float x = 0.0f;
@@ -376,6 +382,7 @@ Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass =
     nodesPos.push_back(pos);
     vertexMap[pos] = 11;
 
+    // Creates the faces down to top
     faces.push_back(0); faces.push_back(1); faces.push_back(2);
     faces.push_back(1); faces.push_back(0); faces.push_back(3);
     faces.push_back(0); faces.push_back(2); faces.push_back(4);
@@ -397,27 +404,25 @@ Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass =
     faces.push_back(10); faces.push_back(8); faces.push_back(11);
     faces.push_back(11); faces.push_back(9); faces.push_back(10);
 
+    // Creates the new points and faces depending on the detail
     for (int i = 0; i < detail; i++) {
         vector<int> tempFaces;
         for (int j = 0; j < faces.size(); j+=3) {
-            glm::vec3 v1 = nodesPos[faces[j]];
-            glm::vec3 v2 = nodesPos[faces[j+1]];
-            glm::vec3 v3 = nodesPos[faces[j+2]];
+            const glm::vec3 v1 = nodesPos[faces[j]];
+            const glm::vec3 v2 = nodesPos[faces[j+1]];
+            const glm::vec3 v3 = nodesPos[faces[j+2]];
 
-            glm::vec3 p1;
-            float m1 = mass;
-            glm::vec3 midpoint1 = (v2 + v1) * 0.5f;
-            p1 = glm::normalize(midpoint1) * radius;
+            const float m1 = mass;
+            const glm::vec3 midpoint1 = (v2 + v1) * 0.5f;
+            const glm::vec3 p1 = glm::normalize(midpoint1) * radius;
 
-            glm::vec3 p2;
-            float m2 = mass;
-            glm::vec3 midpoint2 = (v3 + v2) * 0.5f;
-            p2 = glm::normalize(midpoint2) * radius;
+            const float m2 = mass;
+            const glm::vec3 midpoint2 = (v3 + v2) * 0.5f;
+            const glm::vec3 p2 = glm::normalize(midpoint2) * radius;
 
-            glm::vec3 p3;
-            float m3 = mass;
-            glm::vec3 midpoint3 = (v1 + v3) * 0.5f;
-            p3 = glm::normalize(midpoint3) * radius;
+            const float m3 = mass;
+            const glm::vec3 midpoint3 = (v1 + v3) * 0.5f;
+            const glm::vec3 p3 = glm::normalize(midpoint3) * radius;
 
             int i1, i2, i3;
 
@@ -472,7 +477,7 @@ Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass =
         model.tetra = tetra;
 
         if (tetra == true) {  // Using Tetrahedrons (uses tetgen)
-            int surfaceType = 2; // 2 = sphere
+            constexpr int surfaceType = 2; // 2 = sphere
             calculateTetras(model, compliance, centerCompliance, mass, surfaceType);
         }
         else {
@@ -486,7 +491,7 @@ Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass =
     }
     else {
         model.type = 2;
-        glm::vec3 center = glm::vec3(0, 0, 0);
+        constexpr glm::vec3 center = glm::vec3(0, 0, 0);
         model.nodesMass.push_back(mass);
         model.nodesPos.push_back(center);
     }
@@ -503,9 +508,9 @@ Model makeIcoSphere(float radius, int detail, float subStep = 1.0f, float mass =
 }
 
 // Makes a Soft Object with the shape of a Globe Sphere
-Model makeSphere(float radius, int slices, int stacks, float subStep = 1.0f, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
-                    float compliance = 0.0f, float centerCompliance = 0.0f, float angleStiffness = 0.0f,
-                    glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), bool tetra = false, bool soft = false) {
+Model makeSphere(const float radius, const int slices, const int stacks, const float subStep = 1.0f, const float mass = 1.0f, const float bounciness = 0.0f, const float volumeCompliance = 0.0f,
+                    const float compliance = 0.0f, const float centerCompliance = 0.0f, const float angleStiffness = 0.0f,
+                    const glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), const bool tetra = false, const bool soft = false) {
     vector<float> nodesMass;
     vector<glm::vec3> nodesPos;
     unordered_map<glm::vec3, int, Vec3Hash, Vec3Equal> vertexMap;
@@ -526,14 +531,14 @@ Model makeSphere(float radius, int slices, int stacks, float subStep = 1.0f, flo
 
     // Generate middle stack vertices (excluding poles)
     for (int i = 1; i < stacks; ++i) {
-        float phi = M_PI * i / stacks;
-        float y = cos(phi);
-        float r = sin(phi);
+        const float phi = M_PI * i / stacks;
+        const float y = cos(phi);
+        const float r = sin(phi);
 
         for (int j = 0; j < slices; ++j) {
-            float theta = 2 * M_PI * j / slices;
-            float x = r * cos(theta);
-            float z = r * sin(theta);
+            const float theta = M_PI * 2 * j / slices;
+            const float x = r * cos(theta);
+            const float z = r * sin(theta);
             pos = glm::vec3(x * radius, y * radius, z * radius);
             nodesMass.push_back(mass);
             nodesPos.push_back(pos);
@@ -566,10 +571,10 @@ Model makeSphere(float radius, int slices, int stacks, float subStep = 1.0f, flo
     // Middle
     for (int i = 1; i < stacks - 1; ++i) {
         for (int j = 0; j < slices; ++j) {
-            int a = idx(i, j);
-            int b = idx(i + 1, j);
-            int c = idx(i, j + 1);
-            int d = idx(i + 1, j + 1);
+            const int a = idx(i, j);
+            const int b = idx(i + 1, j);
+            const int c = idx(i, j + 1);
+            const int d = idx(i + 1, j + 1);
 
             faces.push_back(a);
             faces.push_back(c);
@@ -597,7 +602,7 @@ Model makeSphere(float radius, int slices, int stacks, float subStep = 1.0f, flo
         model.tetra = tetra;
 
         if (tetra == true) {  // Using Tetrahedrons (uses tetgen)
-            int surfaceType = 2; // 2 = sphere
+            constexpr int surfaceType = 2; // 2 = sphere
             calculateTetras(model, compliance, centerCompliance, mass, surfaceType);
         }
         else {
@@ -611,7 +616,7 @@ Model makeSphere(float radius, int slices, int stacks, float subStep = 1.0f, flo
     }
     else {
         model.type = 2;
-        glm::vec3 center = glm::vec3(0, 0, 0);
+        constexpr glm::vec3 center = glm::vec3(0, 0, 0);
         model.nodesMass.push_back(mass);
         model.nodesPos.push_back(center);
     }
@@ -627,10 +632,10 @@ Model makeSphere(float radius, int slices, int stacks, float subStep = 1.0f, flo
     return model;
 }
 
-// Makes a Object with the shape of a Box
-Model makeBox(int slices, int stacks, float subStep, float mass = 1.0f, float bounciness = 0.0f, float volumeCompliance = 0.0f,
-                float compliance = 0.0f, float centerCompliance = 0.0f , float angleStiffness = 0.0f, float H = 1, float V = 1, float L = 1,
-                glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), bool tetra = false, bool soft = false) {
+// Makes an Object with the shape of a Box
+Model makeBox(const int slices, const int stacks, const float subStep, const float mass = 1.0f, const float bounciness = 0.0f, const float volumeCompliance = 0.0f,
+                const float compliance = 0.0f, const float centerCompliance = 0.0f , const float angleStiffness = 0.0f, const float H = 1, const float V = 1, const float L = 1,
+                const glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f), const bool tetra = false, const bool soft = false) {
     vector<float> nodesMass;
     vector<glm::vec3> nodesPos;
     vector<int> faces;
@@ -769,10 +774,10 @@ Model makeBox(int slices, int stacks, float subStep, float mass = 1.0f, float bo
         int offset = k * faceSize;
         for (int i = 0; i < stacks; ++i) {
             for (int j = 0; j < slices; ++j) {
-                int a = offset + j + (slices + 1) * i;
-                int b = offset + j + (slices + 1) * (i + 1);
-                int c = a + 1;
-                int d = b + 1;
+                const int a = offset + j + (slices + 1) * i;
+                const int b = offset + j + (slices + 1) * (i + 1);
+                const int c = a + 1;
+                const int d = b + 1;
 
                 faces.push_back(indexs[a]);
                 faces.push_back(indexs[b]);
@@ -824,7 +829,7 @@ Model makeBox(int slices, int stacks, float subStep, float mass = 1.0f, float bo
     return model;
 }
 
-void writeModel (Model &model, string saveDirectory, string modelName) {
+void writeModel (Model &model, const string &saveDirectory, const string &modelName) {
     if (!fs::exists(saveDirectory)) {
         if (fs::create_directory(saveDirectory)) {
             cout << "Directory created: " << saveDirectory << '\n';
@@ -834,7 +839,7 @@ void writeModel (Model &model, string saveDirectory, string modelName) {
         }
     }
 
-    string path = saveDirectory + "/" + modelName + ".json";
+    const string path = saveDirectory + "/" + modelName + ".json";
 
     if (!fs::exists(path)) {
         ofstream file(path);
@@ -851,10 +856,9 @@ void writeModel (Model &model, string saveDirectory, string modelName) {
     if (modelFile.is_open())
     {
         modelFile << json(model).dump(4);
-        cout << "File Writened: " << path << '\n';
+        cout << "File Written: " << path << '\n';
     }
     else cerr << "Unable to open file";
-    return;
 }
 
 void main() {
@@ -896,10 +900,10 @@ void main() {
         cout << "Enter the red aspect of the color: ";
         cin >> colorX;
 
-        cout << "Enter the blue aspect of the color: ";
+        cout << "Enter the green aspect of the color: ";
         cin >> colorY;
 
-        cout << "Enter the green aspect of the color: ";
+        cout << "Enter the blue aspect of the color: ";
         cin >> colorZ;
 
         glm::vec3 color = glm::vec3(colorX, colorY, colorZ);
@@ -964,10 +968,10 @@ void main() {
         cout << "Enter the red aspect of the color: ";
         cin >> colorX;
 
-        cout << "Enter the blue aspect of the color: ";
+        cout << "Enter the green aspect of the color: ";
         cin >> colorY;
 
-        cout << "Enter the green aspect of the color: ";
+        cout << "Enter the blue aspect of the color: ";
         cin >> colorZ;
 
         glm::vec3 color = glm::vec3(colorX, colorY, colorZ);
@@ -1038,10 +1042,10 @@ void main() {
         cout << "Enter the red aspect of the color: ";
         cin >> colorX;
 
-        cout << "Enter the blue aspect of the color: ";
+        cout << "Enter the green aspect of the color: ";
         cin >> colorY;
 
-        cout << "Enter the green aspect of the color: ";
+        cout << "Enter the blue aspect of the color: ";
         cin >> colorZ;
 
         glm::vec3 color = glm::vec3(colorX, colorY, colorZ);
